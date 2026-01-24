@@ -1,0 +1,285 @@
+package views
+
+import (
+	"fmt"
+	"strings"
+
+	"tui-go/db"
+	"tui-go/styles"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+type dataMsg struct {
+	properties []db.Property
+}
+
+type snapshotsMsg struct {
+	snapshots []db.Snapshot
+}
+
+type Data struct {
+	db             *db.Client
+	width, height  int
+	properties     []db.Property
+	snapshots      []db.Snapshot
+	selectedRow    int
+	unsyncedOnly   bool
+	selectedPropID string
+}
+
+func NewData(dbClient *db.Client) Data {
+	return Data{db: dbClient}
+}
+
+func (d Data) Init() tea.Cmd {
+	return d.Refresh()
+}
+
+func (d Data) Refresh() tea.Cmd {
+	return func() tea.Msg {
+		props, _ := d.db.GetProperties(100, d.unsyncedOnly)
+		return dataMsg{props}
+	}
+}
+
+func (d Data) SetSize(w, h int) {
+	d.width = w
+	d.height = h
+}
+
+func (d Data) GetSelectedURL() string {
+	if len(d.snapshots) > 0 {
+		return d.snapshots[0].URL
+	}
+	return ""
+}
+
+func (d Data) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case dataMsg:
+		d.properties = msg.properties
+		if len(d.properties) > 0 && d.selectedRow < len(d.properties) {
+			return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+		}
+
+	case snapshotsMsg:
+		d.snapshots = msg.snapshots
+
+	case tea.WindowSizeMsg:
+		d.width = msg.Width
+		d.height = msg.Height - 4
+
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "up", "k":
+			if d.selectedRow > 0 {
+				d.selectedRow--
+				if len(d.properties) > 0 {
+					return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+				}
+			}
+		case "down", "j":
+			if d.selectedRow < len(d.properties)-1 {
+				d.selectedRow++
+				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+			}
+		case "u":
+			d.unsyncedOnly = !d.unsyncedOnly
+			d.selectedRow = 0
+			return d, d.Refresh()
+		}
+	}
+	return d, nil
+}
+
+func (d Data) loadSnapshots(propID string) tea.Cmd {
+	d.selectedPropID = propID
+	return func() tea.Msg {
+		snaps, _ := d.db.GetSnapshotsForProperty(propID)
+		return snapshotsMsg{snaps}
+	}
+}
+
+func (d Data) View() string {
+	filterStatus := "All"
+	if d.unsyncedOnly {
+		filterStatus = "Unsynced only"
+	}
+
+	propsTable := d.renderPropertiesTable()
+	bottomPanel := d.renderBottomPanel()
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		styles.Title.Render("Properties")+"  "+styles.StatLabel.Render(fmt.Sprintf("[u] Filter: %s", filterStatus)),
+		propsTable,
+		"",
+		bottomPanel,
+	)
+}
+
+func (d Data) renderPropertiesTable() string {
+	header := fmt.Sprintf("%-35s %-12s %10s %4s %4s %7s %-8s %5s %6s",
+		"Address", "City", "Price", "Bed", "Bath", "SqFt", "Type", "List", "Sync")
+	rows := styles.TableHeader.Render(header) + "\n"
+
+	maxRows := 15
+	if len(d.properties) < maxRows {
+		maxRows = len(d.properties)
+	}
+
+	for i := 0; i < maxRows; i++ {
+		p := d.properties[i]
+		price := "—"
+		if p.LatestPrice > 0 {
+			price = fmt.Sprintf("$%d", p.LatestPrice/1000) + "K"
+		}
+		synced := styles.StatusPending.Render("○")
+		if p.Synced {
+			synced = styles.StatusSuccess.Render("✓")
+		}
+
+		row := fmt.Sprintf("%-35s %-12s %10s %4d %4d %7s %-8s %5d %6s",
+			truncate(p.NormalizedAddress, 35),
+			truncate(p.City, 12),
+			price,
+			p.Beds,
+			p.Baths,
+			formatSqft(p.Sqft),
+			truncate(p.PropertyType, 8),
+			p.TimesListed,
+			synced,
+		)
+
+		if i == d.selectedRow {
+			rows += styles.TableSelected.Render(row) + "\n"
+		} else {
+			rows += row + "\n"
+		}
+	}
+	return rows
+}
+
+func (d Data) renderBottomPanel() string {
+	priceHistory := d.renderPriceHistory()
+	listingDetails := d.renderListingDetails()
+
+	historyBox := styles.CardBorder.Width(d.width/2 - 2).Render(
+		styles.Title.Render("Price History") + "\n" + priceHistory,
+	)
+	detailsBox := styles.SiteCardBorder.Width(d.width/2 - 2).Render(
+		styles.Title.Render("Listing Details") + "\n" + listingDetails,
+	)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, historyBox, detailsBox)
+}
+
+func (d Data) renderPriceHistory() string {
+	if len(d.snapshots) == 0 {
+		return styles.Muted.Render("Select a property")
+	}
+
+	header := fmt.Sprintf("%-12s %-10s %12s", "Date", "Site", "Price")
+	rows := styles.TableHeader.Render(header) + "\n"
+
+	maxRows := 8
+	if len(d.snapshots) < maxRows {
+		maxRows = len(d.snapshots)
+	}
+
+	var prevPrice int
+	for i := 0; i < maxRows; i++ {
+		s := d.snapshots[i]
+		date := s.ScrapedAt.Format("2006-01-02")
+		price := fmt.Sprintf("$%d", s.Price/1000) + "K"
+
+		priceStyle := lipgloss.NewStyle()
+		if i > 0 && prevPrice > 0 && s.Price != prevPrice {
+			if s.Price > prevPrice {
+				priceStyle = styles.StatusError
+			} else {
+				priceStyle = styles.StatusSuccess
+			}
+		}
+		prevPrice = s.Price
+
+		row := fmt.Sprintf("%-12s %-10s %12s",
+			date,
+			truncate(s.SiteID, 10),
+			priceStyle.Render(price),
+		)
+		rows += row + "\n"
+	}
+	return rows
+}
+
+func (d Data) renderListingDetails() string {
+	if len(d.snapshots) == 0 {
+		return styles.Muted.Render("Select a property")
+	}
+
+	s := d.snapshots[0]
+	lines := []string{
+		fmt.Sprintf("MLS#: %s", s.ListingID),
+		"",
+	}
+
+	if s.Description != "" {
+		desc := s.Description
+		if len(desc) > 200 {
+			desc = desc[:200] + "..."
+		}
+		wrapped := wrapText(desc, d.width/2-6)
+		lines = append(lines, wrapped...)
+		lines = append(lines, "")
+	}
+
+	if s.Realtor.AgentName != "" {
+		lines = append(lines, styles.StatLabel.Render("Agent: ")+s.Realtor.AgentName)
+	}
+	if s.Realtor.AgentPhone != "" {
+		lines = append(lines, styles.StatLabel.Render("Phone: ")+s.Realtor.AgentPhone)
+	}
+	if s.Realtor.CompanyName != "" {
+		lines = append(lines, styles.StatLabel.Render("Company: ")+s.Realtor.CompanyName)
+	}
+
+	lines = append(lines, "", styles.Muted.Render(truncate(s.URL, d.width/2-6)))
+
+	return strings.Join(lines, "\n")
+}
+
+func formatSqft(sqft int) string {
+	if sqft == 0 {
+		return "—"
+	}
+	if sqft >= 1000 {
+		return fmt.Sprintf("%d,%03d", sqft/1000, sqft%1000)
+	}
+	return fmt.Sprintf("%d", sqft)
+}
+
+func wrapText(text string, width int) []string {
+	if width <= 0 {
+		width = 40
+	}
+	var lines []string
+	words := strings.Fields(text)
+	var line string
+	for _, word := range words {
+		if len(line)+len(word)+1 > width {
+			lines = append(lines, line)
+			line = word
+		} else {
+			if line != "" {
+				line += " "
+			}
+			line += word
+		}
+	}
+	if line != "" {
+		lines = append(lines, line)
+	}
+	return lines
+}

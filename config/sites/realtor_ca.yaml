@@ -1,0 +1,18 @@
+id: realtor_ca
+name: Realtor.ca
+handler: apify
+apify_actor: canadesk
+apify_max_listings: 600
+rate_limit_ms: 500
+endpoints:
+  search: https://api37.realtor.ca/Listing.svc/PropertySearch_Post
+  details: https://api37.realtor.ca/Listing.svc/PropertyDetails
+regions:
+  windsor-on:
+    slug: on/windsor/real-estate
+    geo_id: g30_dpsbxd9c
+    geo_name: Windsor, ON
+    lat_min: 42.15177
+    lat_max: 42.45498
+    lng_min: -83.38449
+    lng_max: -82.68498

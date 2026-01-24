@@ -81,6 +81,7 @@ downloads/
 cache/
 scraped_data/
 *.csv
+browser_data/
 
 # OS
 .DS_Store
@@ -91,4 +92,19 @@ Thumbs.db
 # Build artifacts
 /scraper
 /admin-tui
+/tct_scrooper
 release/
+
+# Virtual environments
+.venv/
+
+# Debug artifacts
+debug_*.html
+debug_*.png
+
+# SQLite temp files
+*.db-shm
+*.db-wal
+
+# Compiled binaries
+tui-go/tui-go
