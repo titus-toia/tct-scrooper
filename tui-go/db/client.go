@@ -96,6 +96,24 @@ func New(dbPath string) (*Client, error) {
 	return &Client{db: db}, nil
 }
 
+func parseTime(s string) *time.Time {
+	formats := []string{
+		time.RFC3339,
+		time.RFC3339Nano,
+		"2006-01-02 15:04:05.999999999-07:00",
+		"2006-01-02 15:04:05.999999999+00:00",
+		"2006-01-02 15:04:05-07:00",
+		"2006-01-02 15:04:05",
+		"2006-01-02T15:04:05",
+	}
+	for _, f := range formats {
+		if t, err := time.Parse(f, s); err == nil {
+			return &t
+		}
+	}
+	return nil
+}
+
 func (c *Client) Close() error {
 	return c.db.Close()
 }
@@ -123,8 +141,7 @@ func (c *Client) GetSiteStats() ([]SiteStats, error) {
 			return nil, err
 		}
 		if lastRunAt.Valid {
-			t, _ := time.Parse(time.RFC3339, lastRunAt.String)
-			s.LastRunAt = &t
+			s.LastRunAt = parseTime(lastRunAt.String)
 		}
 		if lastRunStatus.Valid {
 			s.LastRunStatus = &lastRunStatus.String
@@ -156,11 +173,12 @@ func (c *Client) GetRecentRuns(limit int) ([]ScrapeRun, error) {
 			return nil, err
 		}
 		if startedAt.Valid {
-			r.StartedAt, _ = time.Parse(time.RFC3339, startedAt.String)
+			if t := parseTime(startedAt.String); t != nil {
+				r.StartedAt = *t
+			}
 		}
 		if finishedAt.Valid {
-			t, _ := time.Parse(time.RFC3339, finishedAt.String)
-			r.FinishedAt = &t
+			r.FinishedAt = parseTime(finishedAt.String)
 		}
 		runs = append(runs, r)
 	}
@@ -198,10 +216,14 @@ func (c *Client) GetProperties(limit int, unsyncedOnly bool) ([]Property, error)
 			return nil, err
 		}
 		if firstSeen.Valid {
-			p.FirstSeenAt, _ = time.Parse(time.RFC3339, firstSeen.String)
+			if t := parseTime(firstSeen.String); t != nil {
+				p.FirstSeenAt = *t
+			}
 		}
 		if lastSeen.Valid {
-			p.LastSeenAt, _ = time.Parse(time.RFC3339, lastSeen.String)
+			if t := parseTime(lastSeen.String); t != nil {
+				p.LastSeenAt = *t
+			}
 		}
 		if latestPrice.Valid {
 			p.LatestPrice = int(latestPrice.Int64)
@@ -251,7 +273,9 @@ func (c *Client) GetSnapshotsForProperty(propertyID string) ([]Snapshot, error) 
 			return nil, err
 		}
 		if scrapedAt.Valid {
-			s.ScrapedAt, _ = time.Parse(time.RFC3339, scrapedAt.String)
+			if t := parseTime(scrapedAt.String); t != nil {
+				s.ScrapedAt = *t
+			}
 		}
 		s.Realtor = parseRealtorJSON(realtorJSON)
 		snaps = append(snaps, s)
@@ -312,7 +336,9 @@ func (c *Client) GetRecentLogs(limit int, level *string) ([]ScrapeLog, error) {
 			return nil, err
 		}
 		if ts.Valid {
-			l.Timestamp, _ = time.Parse(time.RFC3339, ts.String)
+			if t := parseTime(ts.String); t != nil {
+				l.Timestamp = *t
+			}
 		}
 		if runID.Valid {
 			id := int(runID.Int64)

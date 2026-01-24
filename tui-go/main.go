@@ -101,9 +101,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.dashboard.SetSize(msg.Width, msg.Height-4)
-		m.data.SetSize(msg.Width, msg.Height-4)
-		m.logs.SetSize(msg.Width, msg.Height-4)
 
 	case tickMsg:
 		cmds = append(cmds, m.refreshActive(), tickCmd())
@@ -112,19 +109,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.refreshActive())
 	}
 
-	switch m.activeTab {
-	case tabDashboard:
-		newDashboard, cmd := m.dashboard.Update(msg)
+	// Always route data messages to all views (for initial load)
+	// Route key messages only to active tab
+	switch msg.(type) {
+	case tea.KeyMsg:
+		switch m.activeTab {
+		case tabDashboard:
+			newDashboard, cmd := m.dashboard.Update(msg)
+			m.dashboard = newDashboard.(views.Dashboard)
+			cmds = append(cmds, cmd)
+		case tabData:
+			newData, cmd := m.data.Update(msg)
+			m.data = newData.(views.Data)
+			cmds = append(cmds, cmd)
+		case tabLogs:
+			newLogs, cmd := m.logs.Update(msg)
+			m.logs = newLogs.(views.Logs)
+			cmds = append(cmds, cmd)
+		}
+	default:
+		// Route other messages to all views
+		newDashboard, cmd1 := m.dashboard.Update(msg)
 		m.dashboard = newDashboard.(views.Dashboard)
-		cmds = append(cmds, cmd)
-	case tabData:
-		newData, cmd := m.data.Update(msg)
+		cmds = append(cmds, cmd1)
+
+		newData, cmd2 := m.data.Update(msg)
 		m.data = newData.(views.Data)
-		cmds = append(cmds, cmd)
-	case tabLogs:
-		newLogs, cmd := m.logs.Update(msg)
+		cmds = append(cmds, cmd2)
+
+		newLogs, cmd3 := m.logs.Update(msg)
 		m.logs = newLogs.(views.Logs)
-		cmds = append(cmds, cmd)
+		cmds = append(cmds, cmd3)
 	}
 
 	return m, tea.Batch(cmds...)

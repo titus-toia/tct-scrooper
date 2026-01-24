@@ -1,0 +1,9 @@
+services:
+  scraper:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    # ExpressVPN requires host network mode
+    # network_mode: host

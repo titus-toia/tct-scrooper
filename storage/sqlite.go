@@ -335,8 +335,12 @@ func (s *SQLiteStore) GetPendingCommands() ([]models.Command, error) {
 	var cmds []models.Command
 	for rows.Next() {
 		var cmd models.Command
-		if err := rows.Scan(&cmd.ID, &cmd.Command, &cmd.Params, &cmd.CreatedAt, &cmd.ProcessedAt); err != nil {
+		var params sql.NullString
+		if err := rows.Scan(&cmd.ID, &cmd.Command, &params, &cmd.CreatedAt, &cmd.ProcessedAt); err != nil {
 			return nil, err
+		}
+		if params.Valid {
+			cmd.Params = json.RawMessage(params.String)
 		}
 		cmds = append(cmds, cmd)
 	}

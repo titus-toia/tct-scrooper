@@ -33,7 +33,9 @@ type SupabaseProperty struct {
 	CurrentPrice     int             `json:"current_price"`
 	CurrentListingID string          `json:"current_listing_id"`
 	CurrentURL       string          `json:"current_url"`
+	Description      string          `json:"description,omitempty"`
 	Photos           json.RawMessage `json:"photos"`
+	Realtor          json.RawMessage `json:"realtor,omitempty"`
 	IsActive         bool            `json:"is_active"`
 	History          json.RawMessage `json:"history"`
 	TimesListed      int             `json:"times_listed"`

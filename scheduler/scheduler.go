@@ -32,6 +32,10 @@ func New(cfg *config.Config, orchestrator *scraper.Orchestrator, store *storage.
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
+	// Always start command polling (for TUI commands)
+	go s.pollCommands(ctx)
+	go s.pollResumes(ctx)
+
 	if s.cfg.Scheduler.Cron != "" {
 		log.Printf("Starting scheduler with cron: %s", s.cfg.Scheduler.Cron)
 		_, err := s.cron.AddFunc(s.cfg.Scheduler.Cron, func() {
@@ -61,12 +65,8 @@ func (s *Scheduler) Start(ctx context.Context) error {
 			}
 		}()
 	} else {
-		log.Println("No schedule configured, running once")
-		return s.orchestrator.RunAll(ctx)
+		log.Println("No schedule configured, daemon will only respond to commands")
 	}
-
-	go s.pollCommands(ctx)
-	go s.pollResumes(ctx)
 
 	return nil
 }

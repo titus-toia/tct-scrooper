@@ -81,14 +81,59 @@ func (d Data) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case "down", "j":
-			if d.selectedRow < len(d.properties)-1 {
+			if len(d.properties) > 0 && d.selectedRow < len(d.properties)-1 {
 				d.selectedRow++
+				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+			}
+		case "pgdown", "ctrl+d":
+			if len(d.properties) > 0 {
+				d.selectedRow += 10
+				if d.selectedRow >= len(d.properties) {
+					d.selectedRow = len(d.properties) - 1
+				}
+				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+			}
+		case "pgup", "ctrl+u":
+			if len(d.properties) > 0 {
+				d.selectedRow -= 10
+				if d.selectedRow < 0 {
+					d.selectedRow = 0
+				}
+				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+			}
+		case "home", "g":
+			if len(d.properties) > 0 {
+				d.selectedRow = 0
+				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+			}
+		case "end", "G":
+			if len(d.properties) > 0 {
+				d.selectedRow = len(d.properties) - 1
 				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
 			}
 		case "u":
 			d.unsyncedOnly = !d.unsyncedOnly
 			d.selectedRow = 0
 			return d, d.Refresh()
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			// Jump to percentage of list (1=10%, 2=20%, etc)
+			if len(d.properties) > 0 {
+				pct := int(msg.String()[0] - '0')
+				d.selectedRow = (len(d.properties) * pct * 10 / 100) - 1
+				if d.selectedRow < 0 {
+					d.selectedRow = 0
+				}
+				if d.selectedRow >= len(d.properties) {
+					d.selectedRow = len(d.properties) - 1
+				}
+				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+			}
+		case "0":
+			// Jump to end (100%)
+			if len(d.properties) > 0 {
+				d.selectedRow = len(d.properties) - 1
+				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+			}
 		}
 	}
 	return d, nil
@@ -108,11 +153,21 @@ func (d Data) View() string {
 		filterStatus = "Unsynced only"
 	}
 
+	// Position counter
+	position := ""
+	if len(d.properties) > 0 {
+		position = fmt.Sprintf("  %d/%d", d.selectedRow+1, len(d.properties))
+	}
+
 	propsTable := d.renderPropertiesTable()
 	bottomPanel := d.renderBottomPanel()
 
+	header := styles.Title.Render("Properties") +
+		styles.StatValue.Render(position) +
+		"  " + styles.StatLabel.Render(fmt.Sprintf("[u] Filter: %s  [1-9] Jump to %%  [g/G] Start/End", filterStatus))
+
 	return lipgloss.JoinVertical(lipgloss.Left,
-		styles.Title.Render("Properties")+"  "+styles.StatLabel.Render(fmt.Sprintf("[u] Filter: %s", filterStatus)),
+		header,
 		propsTable,
 		"",
 		bottomPanel,
@@ -124,12 +179,27 @@ func (d Data) renderPropertiesTable() string {
 		"Address", "City", "Price", "Bed", "Bath", "SqFt", "Type", "List", "Sync")
 	rows := styles.TableHeader.Render(header) + "\n"
 
-	maxRows := 15
-	if len(d.properties) < maxRows {
-		maxRows = len(d.properties)
+	visibleRows := 25
+	if d.height > 0 {
+		// Use ~60% of height for properties table
+		visibleRows = (d.height * 60) / 100
+		if visibleRows < 10 {
+			visibleRows = 10
+		}
 	}
 
-	for i := 0; i < maxRows; i++ {
+	// Calculate scroll offset to keep selected row visible
+	scrollOffset := 0
+	if d.selectedRow >= visibleRows {
+		scrollOffset = d.selectedRow - visibleRows + 1
+	}
+
+	endRow := scrollOffset + visibleRows
+	if endRow > len(d.properties) {
+		endRow = len(d.properties)
+	}
+
+	for i := scrollOffset; i < endRow; i++ {
 		p := d.properties[i]
 		price := "—"
 		if p.LatestPrice > 0 {
@@ -158,6 +228,12 @@ func (d Data) renderPropertiesTable() string {
 			rows += row + "\n"
 		}
 	}
+
+	// Show scroll indicator
+	if len(d.properties) > visibleRows {
+		rows += styles.Muted.Render(fmt.Sprintf("  [%d-%d of %d]", scrollOffset+1, endRow, len(d.properties)))
+	}
+
 	return rows
 }
 

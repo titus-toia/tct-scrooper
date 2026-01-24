@@ -201,8 +201,14 @@ func relativeTime(t time.Time) string {
 }
 
 func truncate(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
 	if len(s) <= max {
 		return s
+	}
+	if max <= 1 {
+		return "…"
 	}
 	return s[:max-1] + "…"
 }
