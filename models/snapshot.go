@@ -47,6 +47,7 @@ type RawListing struct {
 	PostalCode   string          `json:"postal_code"`
 	Price        int             `json:"price"`
 	Beds         int             `json:"beds"`
+	BedsPlus     int             `json:"beds_plus"` // basement bedrooms (the +1 in "3 + 1")
 	Baths        int             `json:"baths"`
 	SqFt         int             `json:"sqft"`
 	PropertyType string          `json:"property_type"`

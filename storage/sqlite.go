@@ -118,13 +118,13 @@ func (s *SQLiteStore) migrate() error {
 
 func (s *SQLiteStore) GetProperty(id string) (*models.Property, error) {
 	row := s.db.QueryRow(`
-		SELECT id, normalized_address, city, postal_code, beds, baths, sqft, property_type,
+		SELECT id, normalized_address, city, postal_code, beds, beds_plus, baths, sqft, property_type,
 			first_seen_at, last_seen_at, times_listed, synced
 		FROM properties WHERE id = ?`, id)
 
 	var p models.Property
 	var postalCode sql.NullString
-	err := row.Scan(&p.ID, &p.NormalizedAddress, &p.City, &postalCode, &p.Beds, &p.Baths,
+	err := row.Scan(&p.ID, &p.NormalizedAddress, &p.City, &postalCode, &p.Beds, &p.BedsPlus, &p.Baths,
 		&p.SqFt, &p.PropertyType, &p.FirstSeenAt, &p.LastSeenAt, &p.TimesListed, &p.Synced)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -138,15 +138,15 @@ func (s *SQLiteStore) GetProperty(id string) (*models.Property, error) {
 
 func (s *SQLiteStore) UpsertProperty(p *models.Property) error {
 	_, err := s.db.Exec(`
-		INSERT INTO properties (id, normalized_address, city, postal_code, beds, baths, sqft, property_type,
+		INSERT INTO properties (id, normalized_address, city, postal_code, beds, beds_plus, baths, sqft, property_type,
 			first_seen_at, last_seen_at, times_listed, synced)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
 			last_seen_at = excluded.last_seen_at,
 			times_listed = excluded.times_listed,
 			postal_code = COALESCE(excluded.postal_code, postal_code),
 			synced = FALSE`,
-		p.ID, p.NormalizedAddress, p.City, p.PostalCode, p.Beds, p.Baths, p.SqFt, p.PropertyType,
+		p.ID, p.NormalizedAddress, p.City, p.PostalCode, p.Beds, p.BedsPlus, p.Baths, p.SqFt, p.PropertyType,
 		p.FirstSeenAt, p.LastSeenAt, p.TimesListed, p.Synced)
 	return err
 }
@@ -189,6 +189,28 @@ func (s *SQLiteStore) GetLastSnapshotForProperty(propertyID string) (*models.Sna
 	row := s.db.QueryRow(`
 		SELECT id, property_id, listing_id, site_id, url, price, description, realtor, data, scraped_at, run_id
 		FROM listing_snapshots WHERE property_id = ? ORDER BY scraped_at DESC LIMIT 1`, propertyID)
+
+	var snap models.Snapshot
+	var desc, realtor sql.NullString
+	err := row.Scan(&snap.ID, &snap.PropertyID, &snap.ListingID, &snap.SiteID,
+		&snap.URL, &snap.Price, &desc, &realtor, &snap.Data, &snap.ScrapedAt, &snap.RunID)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	snap.Description = desc.String
+	if realtor.Valid {
+		snap.Realtor = []byte(realtor.String)
+	}
+	return &snap, nil
+}
+
+func (s *SQLiteStore) GetLastSnapshotByMLS(listingID string) (*models.Snapshot, error) {
+	row := s.db.QueryRow(`
+		SELECT id, property_id, listing_id, site_id, url, price, description, realtor, data, scraped_at, run_id
+		FROM listing_snapshots WHERE listing_id = ? ORDER BY scraped_at DESC LIMIT 1`, listingID)
 
 	var snap models.Snapshot
 	var desc, realtor sql.NullString
@@ -274,7 +296,7 @@ func (s *SQLiteStore) GetPropertyCount(siteID string) (int, error) {
 
 func (s *SQLiteStore) GetUnsyncedProperties() ([]models.Property, error) {
 	rows, err := s.db.Query(`
-		SELECT id, normalized_address, city, postal_code, beds, baths, sqft, property_type,
+		SELECT id, normalized_address, city, postal_code, beds, beds_plus, baths, sqft, property_type,
 			first_seen_at, last_seen_at, times_listed, synced
 		FROM properties WHERE synced = FALSE`)
 	if err != nil {
@@ -286,7 +308,7 @@ func (s *SQLiteStore) GetUnsyncedProperties() ([]models.Property, error) {
 	for rows.Next() {
 		var p models.Property
 		var postalCode sql.NullString
-		if err := rows.Scan(&p.ID, &p.NormalizedAddress, &p.City, &postalCode, &p.Beds, &p.Baths,
+		if err := rows.Scan(&p.ID, &p.NormalizedAddress, &p.City, &postalCode, &p.Beds, &p.BedsPlus, &p.Baths,
 			&p.SqFt, &p.PropertyType, &p.FirstSeenAt, &p.LastSeenAt, &p.TimesListed, &p.Synced); err != nil {
 			return nil, err
 		}

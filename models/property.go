@@ -11,6 +11,7 @@ type Property struct {
 	City              string    `json:"city" db:"city"`
 	PostalCode        string    `json:"postal_code" db:"postal_code"`
 	Beds              int       `json:"beds" db:"beds"`
+	BedsPlus          int       `json:"beds_plus" db:"beds_plus"`
 	Baths             int       `json:"baths" db:"baths"`
 	SqFt              int       `json:"sqft" db:"sqft"`
 	PropertyType      string    `json:"property_type" db:"property_type"`
@@ -25,6 +26,7 @@ type SupabaseProperty struct {
 	Address          string          `json:"address"`
 	City             string          `json:"city"`
 	Beds             int             `json:"beds"`
+	BedsPlus         int             `json:"beds_plus"`
 	Baths            int             `json:"baths"`
 	SqFt             int             `json:"sqft"`
 	PropertyType     string          `json:"property_type"`

@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS properties (
 	city TEXT,
 	postal_code TEXT,
 	beds INTEGER,
+	beds_plus INTEGER DEFAULT 0,
 	baths INTEGER,
 	sqft INTEGER,
 	property_type TEXT,
