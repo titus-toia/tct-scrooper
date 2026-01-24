@@ -323,6 +323,14 @@ func (s *SQLiteStore) MarkPropertySynced(id string) error {
 	return err
 }
 
+func (s *SQLiteStore) MarkAllUnsynced() (int64, error) {
+	result, err := s.db.Exec(`UPDATE properties SET synced = FALSE`)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 func (s *SQLiteStore) GetPendingCommands() ([]models.Command, error) {
 	rows, err := s.db.Query(`
 		SELECT id, command, params, created_at, processed_at

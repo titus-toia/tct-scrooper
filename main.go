@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"os"
 	"os/signal"
@@ -14,9 +15,16 @@ import (
 	"tct_scrooper/vpn"
 )
 
+var (
+	resync    = flag.Bool("resync", false, "Mark all properties unsynced and push to Supabase")
+	syncOnly  = flag.Bool("sync", false, "Run sync to Supabase and exit")
+	scrapeNow = flag.Bool("scrape", false, "Run scrape once and exit")
+)
+
 func main() {
+	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
-	log.Println("Starting tct_scrooper daemon...")
+	log.Println("Starting tct_scrooper...")
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -51,9 +59,46 @@ func main() {
 	}
 
 	orchestrator := scraper.NewOrchestrator(cfg, store, supabase, vpnClient)
-	sched := scheduler.New(cfg, orchestrator, store)
+	ctx := context.Background()
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Handle one-shot commands
+	if *resync {
+		log.Println("Marking all properties as unsynced...")
+		count, err := store.MarkAllUnsynced()
+		if err != nil {
+			log.Fatalf("Failed to mark unsynced: %v", err)
+		}
+		log.Printf("Marked %d properties as unsynced", count)
+
+		log.Println("Syncing to Supabase...")
+		if err := orchestrator.SyncToSupabase(ctx); err != nil {
+			log.Fatalf("Sync failed: %v", err)
+		}
+		log.Println("Resync complete!")
+		return
+	}
+
+	if *syncOnly {
+		log.Println("Running sync to Supabase...")
+		if err := orchestrator.SyncToSupabase(ctx); err != nil {
+			log.Fatalf("Sync failed: %v", err)
+		}
+		log.Println("Sync complete!")
+		return
+	}
+
+	if *scrapeNow {
+		log.Println("Running scrape...")
+		if err := orchestrator.RunAll(ctx); err != nil {
+			log.Fatalf("Scrape failed: %v", err)
+		}
+		log.Println("Scrape complete!")
+		return
+	}
+
+	// Daemon mode
+	sched := scheduler.New(cfg, orchestrator, store)
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	if err := sched.Start(ctx); err != nil {
