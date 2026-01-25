@@ -90,8 +90,6 @@ Thumbs.db
 *.pid
 
 # Build artifacts
-/scraper
-/admin-tui
 /tct_scrooper
 release/
 
