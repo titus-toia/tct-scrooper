@@ -13,6 +13,7 @@ import (
 
 type dataMsg struct {
 	properties []db.Property
+	total      int
 }
 
 type snapshotsMsg struct {
@@ -27,10 +28,13 @@ type Data struct {
 	selectedRow    int
 	unsyncedOnly   bool
 	selectedPropID string
+	dbPage         int // current database page (0-indexed)
+	dbPageSize     int // items per database page
+	totalProps     int // total properties in DB
 }
 
 func NewData(dbClient *db.Client) Data {
-	return Data{db: dbClient}
+	return Data{db: dbClient, dbPageSize: 100}
 }
 
 func (d Data) Init() tea.Cmd {
@@ -39,8 +43,9 @@ func (d Data) Init() tea.Cmd {
 
 func (d Data) Refresh() tea.Cmd {
 	return func() tea.Msg {
-		props, _ := d.db.GetProperties(100, d.unsyncedOnly)
-		return dataMsg{props}
+		props, _ := d.db.GetProperties(d.dbPageSize, d.dbPage*d.dbPageSize, d.unsyncedOnly)
+		total, _ := d.db.GetPropertyCount()
+		return dataMsg{props, total}
 	}
 }
 
@@ -60,7 +65,11 @@ func (d Data) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case dataMsg:
 		d.properties = msg.properties
-		if len(d.properties) > 0 && d.selectedRow < len(d.properties) {
+		d.totalProps = msg.total
+		if d.selectedRow >= len(d.properties) {
+			d.selectedRow = 0
+		}
+		if len(d.properties) > 0 {
 			return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
 		}
 
@@ -115,24 +124,31 @@ func (d Data) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			d.unsyncedOnly = !d.unsyncedOnly
 			d.selectedRow = 0
 			return d, d.Refresh()
-		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
-			// Jump to percentage of list (1=10%, 2=20%, etc)
-			if len(d.properties) > 0 {
-				pct := int(msg.String()[0] - '0')
-				d.selectedRow = (len(d.properties) * pct * 10 / 100) - 1
-				if d.selectedRow < 0 {
-					d.selectedRow = 0
-				}
-				if d.selectedRow >= len(d.properties) {
-					d.selectedRow = len(d.properties) - 1
-				}
-				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9", "0":
+			// Jump to database page (1=page 1, 0=page 10)
+			pageNum := int(msg.String()[0] - '0')
+			if pageNum == 0 {
+				pageNum = 10
 			}
-		case "0":
-			// Jump to end (100%)
-			if len(d.properties) > 0 {
-				d.selectedRow = len(d.properties) - 1
-				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+			totalPages := d.getTotalDBPages()
+			if pageNum <= totalPages {
+				d.dbPage = pageNum - 1
+				d.selectedRow = 0
+				return d, d.Refresh()
+			}
+		case "[":
+			// Previous database page
+			if d.dbPage > 0 {
+				d.dbPage--
+				d.selectedRow = 0
+				return d, d.Refresh()
+			}
+		case "]":
+			// Next database page
+			if d.dbPage < d.getTotalDBPages()-1 {
+				d.dbPage++
+				d.selectedRow = 0
+				return d, d.Refresh()
 			}
 		}
 	}
@@ -147,24 +163,42 @@ func (d Data) loadSnapshots(propID string) tea.Cmd {
 	}
 }
 
+func (d Data) getVisibleRows() int {
+	rows := 25
+	if d.height > 0 {
+		rows = (d.height * 60) / 100
+		if rows < 10 {
+			rows = 10
+		}
+	}
+	return rows
+}
+
+func (d Data) getTotalDBPages() int {
+	if d.dbPageSize == 0 || d.totalProps == 0 {
+		return 1
+	}
+	return (d.totalProps + d.dbPageSize - 1) / d.dbPageSize
+}
+
 func (d Data) View() string {
 	filterStatus := "All"
 	if d.unsyncedOnly {
 		filterStatus = "Unsynced only"
 	}
 
-	// Position counter
-	position := ""
-	if len(d.properties) > 0 {
-		position = fmt.Sprintf("  %d/%d", d.selectedRow+1, len(d.properties))
-	}
+	// Position counter - show global position across all pages
+	globalPos := d.dbPage*d.dbPageSize + d.selectedRow + 1
+	position := fmt.Sprintf("  %d/%d", globalPos, d.totalProps)
+	pageInfo := fmt.Sprintf("  Page %d/%d", d.dbPage+1, d.getTotalDBPages())
 
 	propsTable := d.renderPropertiesTable()
 	bottomPanel := d.renderBottomPanel()
 
 	header := styles.Title.Render("Properties") +
 		styles.StatValue.Render(position) +
-		"  " + styles.StatLabel.Render(fmt.Sprintf("[u] Filter: %s  [1-9] Jump to %%  [g/G] Start/End", filterStatus))
+		styles.StatLabel.Render(pageInfo) +
+		"  " + styles.Muted.Render(fmt.Sprintf("[u] Filter: %s  [1-0] Page  [[ ]] Prev/Next", filterStatus))
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
@@ -179,14 +213,7 @@ func (d Data) renderPropertiesTable() string {
 		"Address", "City", "Price", "Bed", "Bath", "SqFt", "Type", "List", "Sync")
 	rows := styles.TableHeader.Render(header) + "\n"
 
-	visibleRows := 25
-	if d.height > 0 {
-		// Use ~60% of height for properties table
-		visibleRows = (d.height * 60) / 100
-		if visibleRows < 10 {
-			visibleRows = 10
-		}
-	}
+	visibleRows := d.getVisibleRows()
 
 	// Calculate scroll offset to keep selected row visible
 	scrollOffset := 0

@@ -185,7 +185,7 @@ func (c *Client) GetRecentRuns(limit int) ([]ScrapeRun, error) {
 	return runs, nil
 }
 
-func (c *Client) GetProperties(limit int, unsyncedOnly bool) ([]Property, error) {
+func (c *Client) GetProperties(limit, offset int, unsyncedOnly bool) ([]Property, error) {
 	query := `
 		SELECT p.id, p.normalized_address, p.city, p.beds, p.baths, p.sqft, p.property_type,
 			p.first_seen_at, p.last_seen_at, p.times_listed, p.synced,
@@ -196,9 +196,9 @@ func (c *Client) GetProperties(limit int, unsyncedOnly bool) ([]Property, error)
 	if unsyncedOnly {
 		query += " WHERE p.synced = FALSE"
 	}
-	query += " ORDER BY p.last_seen_at DESC LIMIT ?"
+	query += " ORDER BY p.last_seen_at DESC LIMIT ? OFFSET ?"
 
-	rows, err := c.db.Query(query, limit)
+	rows, err := c.db.Query(query, limit, offset)
 	if err != nil {
 		return nil, err
 	}

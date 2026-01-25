@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -11,19 +12,17 @@ import (
 )
 
 type Config struct {
-	ExpressVPN   ExpressVPNConfig
-	Supabase     SupabaseConfig
-	Scheduler    SchedulerConfig
-	Scraper      ScraperConfig
-	DBPath       string
-	LogLevel     string
-	Sites        map[string]*SiteConfig
+	Proxy     ProxyConfig
+	Supabase  SupabaseConfig
+	Scheduler SchedulerConfig
+	Scraper   ScraperConfig
+	DBPath    string
+	LogLevel  string
+	Sites     map[string]*SiteConfig
 }
 
-type ExpressVPNConfig struct {
-	ActivationCode string
-	AutoConnect    bool
-	Region         string
+type ProxyConfig struct {
+	URL string
 }
 
 type SupabaseConfig struct {
@@ -33,8 +32,9 @@ type SupabaseConfig struct {
 }
 
 type SchedulerConfig struct {
-	Interval time.Duration
-	Cron     string
+	Interval     time.Duration
+	Cron         string
+	SyncInterval time.Duration
 }
 
 type ScraperConfig struct {
@@ -66,10 +66,8 @@ func Load() (*Config, error) {
 	_ = godotenv.Load()
 
 	cfg := &Config{
-		ExpressVPN: ExpressVPNConfig{
-			ActivationCode: os.Getenv("EXPRESSVPN_ACTIVATION_CODE"),
-			AutoConnect:    os.Getenv("EXPRESSVPN_AUTOCONNECT") == "true",
-			Region:         getEnv("EXPRESSVPN_REGION", "smart"),
+		Proxy: ProxyConfig{
+			URL: os.Getenv("PROXY_URL"),
 		},
 		Supabase: SupabaseConfig{
 			URL:        os.Getenv("SUPABASE_URL"),
@@ -94,11 +92,62 @@ func Load() (*Config, error) {
 		}
 	}
 
+	cfg.Scheduler.SyncInterval = 180 * time.Second
+	if interval := os.Getenv("SYNC_INTERVAL"); interval != "" {
+		d, err := time.ParseDuration(interval)
+		if err == nil {
+			cfg.Scheduler.SyncInterval = d
+		}
+	}
+
 	if err := cfg.loadSiteConfigs(); err != nil {
 		return nil, err
 	}
 
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+
 	return cfg, nil
+}
+
+func (c *Config) validate() error {
+	var missing []string
+
+	if c.Proxy.URL == "" {
+		missing = append(missing, "PROXY_URL")
+	}
+
+	// Supabase: if URL set, service key required
+	if c.Supabase.URL != "" && c.Supabase.ServiceKey == "" {
+		missing = append(missing, "SUPABASE_SERVICE_KEY (required when SUPABASE_URL is set)")
+	}
+
+	// Check for Apify key if any site uses apify handler
+	apifyKey := os.Getenv("APIFY_API_KEY")
+	for _, site := range c.Sites {
+		if site.Handler == "apify" && apifyKey == "" {
+			missing = append(missing, "APIFY_API_KEY (required for apify handler)")
+			break
+		}
+	}
+
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required config:\n  - %s", joinStrings(missing, "\n  - "))
+	}
+
+	return nil
+}
+
+func joinStrings(strs []string, sep string) string {
+	if len(strs) == 0 {
+		return ""
+	}
+	result := strs[0]
+	for _, s := range strs[1:] {
+		result += sep + s
+	}
+	return result
 }
 
 func (c *Config) loadSiteConfigs() error {

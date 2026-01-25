@@ -36,11 +36,11 @@ type model struct {
 type tickMsg time.Time
 type refreshMsg struct{}
 
-func initialModel(dbClient *db.Client) model {
+func initialModel(dbClient *db.Client, logPath string) model {
 	return model{
 		db:        dbClient,
 		activeTab: tabDashboard,
-		dashboard: views.NewDashboard(dbClient),
+		dashboard: views.NewDashboard(dbClient, logPath),
 		data:      views.NewData(dbClient),
 		logs:      views.NewLogs(dbClient),
 	}
@@ -211,6 +211,11 @@ func main() {
 		dbPath = "scraper.db"
 	}
 
+	logPath := os.Getenv("LOG_PATH")
+	if logPath == "" {
+		logPath = "daemon.log"
+	}
+
 	dbClient, err := db.New(dbPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
@@ -219,7 +224,7 @@ func main() {
 	defer dbClient.Close()
 
 	p := tea.NewProgram(
-		initialModel(dbClient),
+		initialModel(dbClient, logPath),
 		tea.WithAltScreen(),
 	)
 

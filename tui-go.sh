@@ -11,4 +11,4 @@ if [ ! -f "tui-go/tui-go" ] || [ "tui-go/main.go" -nt "tui-go/tui-go" ]; then
 fi
 
 # Run
-DB_PATH="${DB_PATH:-scraper.db}" ./tui-go/tui-go "$@"
+DB_PATH="${DB_PATH:-scraper.db}" LOG_PATH="${LOG_PATH:-daemon.log}" ./tui-go/tui-go "$@"

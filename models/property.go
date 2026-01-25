@@ -19,6 +19,7 @@ type Property struct {
 	LastSeenAt        time.Time `json:"last_seen_at" db:"last_seen_at"`
 	TimesListed       int       `json:"times_listed" db:"times_listed"`
 	Synced            bool      `json:"synced" db:"synced"`
+	IsActive          bool      `json:"is_active" db:"is_active"`
 }
 
 type SupabaseProperty struct {

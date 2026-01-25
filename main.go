@@ -9,10 +9,11 @@ import (
 	"syscall"
 
 	"tct_scrooper/config"
+	"tct_scrooper/httputil"
+	"tct_scrooper/logging"
 	"tct_scrooper/scheduler"
 	"tct_scrooper/scraper"
 	"tct_scrooper/storage"
-	"tct_scrooper/vpn"
 )
 
 var (
@@ -24,6 +25,14 @@ var (
 func main() {
 	flag.Parse()
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	logFile, err := logging.Setup("daemon.log")
+	if err != nil {
+		log.Printf("Warning: could not set up file logging: %v", err)
+	} else {
+		defer logFile.Close()
+	}
+
 	log.Println("Starting tct_scrooper...")
 
 	cfg, err := config.Load()
@@ -36,12 +45,8 @@ func main() {
 		log.Printf("  - %s (%s)", site.Name, id)
 	}
 
-	vpnClient := vpn.NewExpressVPN(&cfg.ExpressVPN)
-	if err := vpnClient.EnsureConnected(); err != nil {
-		log.Fatalf("VPN required but not connected: %v", err)
-	}
-	status, _ := vpnClient.GetStatus()
-	log.Printf("VPN status: %s", status)
+	clients := httputil.NewClients(&cfg.Proxy)
+	log.Printf("Proxy: %s", cfg.Proxy.URL)
 
 	store, err := storage.NewSQLiteStore(cfg.DBPath)
 	if err != nil {
@@ -58,7 +63,7 @@ func main() {
 		log.Println("Supabase sync disabled (no credentials)")
 	}
 
-	orchestrator := scraper.NewOrchestrator(cfg, store, supabase, vpnClient)
+	orchestrator := scraper.NewOrchestrator(cfg, store, supabase)
 	ctx := context.Background()
 
 	// Handle one-shot commands
@@ -97,7 +102,7 @@ func main() {
 	}
 
 	// Daemon mode
-	sched := scheduler.New(cfg, orchestrator, store)
+	sched := scheduler.New(cfg, orchestrator, store, clients)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

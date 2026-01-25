@@ -5,8 +5,6 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-
-	"tct_scrooper/config"
 )
 
 var (
@@ -14,11 +12,17 @@ var (
 	ErrVPNConnectFail  = errors.New("failed to connect VPN")
 )
 
-type ExpressVPN struct {
-	cfg *config.ExpressVPNConfig
+type Config struct {
+	ActivationCode string
+	AutoConnect    bool
+	Region         string
 }
 
-func NewExpressVPN(cfg *config.ExpressVPNConfig) *ExpressVPN {
+type ExpressVPN struct {
+	cfg *Config
+}
+
+func NewExpressVPN(cfg *Config) *ExpressVPN {
 	return &ExpressVPN{cfg: cfg}
 }
 

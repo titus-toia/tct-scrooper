@@ -39,13 +39,15 @@ func (s *SQLiteStore) migrate() error {
 		city TEXT,
 		postal_code TEXT,
 		beds INTEGER,
+		beds_plus INTEGER DEFAULT 0,
 		baths INTEGER,
 		sqft INTEGER,
 		property_type TEXT,
 		first_seen_at DATETIME,
 		last_seen_at DATETIME,
 		times_listed INTEGER DEFAULT 1,
-		synced BOOLEAN DEFAULT FALSE
+		synced BOOLEAN DEFAULT FALSE,
+		is_active BOOLEAN DEFAULT TRUE
 	);
 
 	CREATE TABLE IF NOT EXISTS listing_snapshots (
@@ -119,13 +121,13 @@ func (s *SQLiteStore) migrate() error {
 func (s *SQLiteStore) GetProperty(id string) (*models.Property, error) {
 	row := s.db.QueryRow(`
 		SELECT id, normalized_address, city, postal_code, beds, beds_plus, baths, sqft, property_type,
-			first_seen_at, last_seen_at, times_listed, synced
+			first_seen_at, last_seen_at, times_listed, synced, COALESCE(is_active, TRUE)
 		FROM properties WHERE id = ?`, id)
 
 	var p models.Property
 	var postalCode sql.NullString
 	err := row.Scan(&p.ID, &p.NormalizedAddress, &p.City, &postalCode, &p.Beds, &p.BedsPlus, &p.Baths,
-		&p.SqFt, &p.PropertyType, &p.FirstSeenAt, &p.LastSeenAt, &p.TimesListed, &p.Synced)
+		&p.SqFt, &p.PropertyType, &p.FirstSeenAt, &p.LastSeenAt, &p.TimesListed, &p.Synced, &p.IsActive)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -139,13 +141,14 @@ func (s *SQLiteStore) GetProperty(id string) (*models.Property, error) {
 func (s *SQLiteStore) UpsertProperty(p *models.Property) error {
 	_, err := s.db.Exec(`
 		INSERT INTO properties (id, normalized_address, city, postal_code, beds, beds_plus, baths, sqft, property_type,
-			first_seen_at, last_seen_at, times_listed, synced)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			first_seen_at, last_seen_at, times_listed, synced, is_active)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
 		ON CONFLICT(id) DO UPDATE SET
 			last_seen_at = excluded.last_seen_at,
 			times_listed = excluded.times_listed,
 			postal_code = COALESCE(excluded.postal_code, postal_code),
-			synced = FALSE`,
+			synced = FALSE,
+			is_active = TRUE`,
 		p.ID, p.NormalizedAddress, p.City, p.PostalCode, p.Beds, p.BedsPlus, p.Baths, p.SqFt, p.PropertyType,
 		p.FirstSeenAt, p.LastSeenAt, p.TimesListed, p.Synced)
 	return err
@@ -297,7 +300,7 @@ func (s *SQLiteStore) GetPropertyCount(siteID string) (int, error) {
 func (s *SQLiteStore) GetUnsyncedProperties() ([]models.Property, error) {
 	rows, err := s.db.Query(`
 		SELECT id, normalized_address, city, postal_code, beds, beds_plus, baths, sqft, property_type,
-			first_seen_at, last_seen_at, times_listed, synced
+			first_seen_at, last_seen_at, times_listed, synced, COALESCE(is_active, TRUE)
 		FROM properties WHERE synced = FALSE`)
 	if err != nil {
 		return nil, err
@@ -309,7 +312,7 @@ func (s *SQLiteStore) GetUnsyncedProperties() ([]models.Property, error) {
 		var p models.Property
 		var postalCode sql.NullString
 		if err := rows.Scan(&p.ID, &p.NormalizedAddress, &p.City, &postalCode, &p.Beds, &p.BedsPlus, &p.Baths,
-			&p.SqFt, &p.PropertyType, &p.FirstSeenAt, &p.LastSeenAt, &p.TimesListed, &p.Synced); err != nil {
+			&p.SqFt, &p.PropertyType, &p.FirstSeenAt, &p.LastSeenAt, &p.TimesListed, &p.Synced, &p.IsActive); err != nil {
 			return nil, err
 		}
 		p.PostalCode = postalCode.String
@@ -320,6 +323,40 @@ func (s *SQLiteStore) GetUnsyncedProperties() ([]models.Property, error) {
 
 func (s *SQLiteStore) MarkPropertySynced(id string) error {
 	_, err := s.db.Exec(`UPDATE properties SET synced = TRUE WHERE id = ?`, id)
+	return err
+}
+
+func (s *SQLiteStore) TouchProperty(id string, t time.Time) error {
+	_, err := s.db.Exec(`UPDATE properties SET last_seen_at = ?, synced = FALSE WHERE id = ?`, t, id)
+	return err
+}
+
+func (s *SQLiteStore) GetOldestActiveProperty() (*models.Property, string, error) {
+	row := s.db.QueryRow(`
+		SELECT p.id, p.normalized_address, p.city, p.postal_code, p.beds, p.beds_plus, p.baths, p.sqft, p.property_type,
+			p.first_seen_at, p.last_seen_at, p.times_listed, p.synced, p.is_active,
+			(SELECT ls.url FROM listing_snapshots ls WHERE ls.property_id = p.id ORDER BY ls.scraped_at DESC LIMIT 1) as url
+		FROM properties p
+		WHERE p.is_active = TRUE AND p.last_seen_at < datetime('now', '-1 day')
+		ORDER BY p.last_seen_at ASC
+		LIMIT 1`)
+
+	var p models.Property
+	var postalCode, url sql.NullString
+	err := row.Scan(&p.ID, &p.NormalizedAddress, &p.City, &postalCode, &p.Beds, &p.BedsPlus, &p.Baths,
+		&p.SqFt, &p.PropertyType, &p.FirstSeenAt, &p.LastSeenAt, &p.TimesListed, &p.Synced, &p.IsActive, &url)
+	if err == sql.ErrNoRows {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	p.PostalCode = postalCode.String
+	return &p, url.String, nil
+}
+
+func (s *SQLiteStore) MarkPropertyInactive(id string) error {
+	_, err := s.db.Exec(`UPDATE properties SET is_active = FALSE, synced = FALSE WHERE id = ?`, id)
 	return err
 }
 

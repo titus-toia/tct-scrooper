@@ -68,4 +68,15 @@ var (
 	Notification = lipgloss.NewStyle().
 			Foreground(SuccessColor).
 			Padding(0, 1)
+
+	LogBox = lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("#4ADE80")).
+		Padding(0, 1)
+
+	LogTimestamp = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#60A5FA"))
+
+	LogInfo = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#A3E635"))
 )

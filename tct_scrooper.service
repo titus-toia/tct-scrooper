@@ -1,0 +1,15 @@
+[Unit]
+Description=TCT Scrooper Daemon
+After=network.target
+
+[Service]
+Type=simple
+User=titus
+WorkingDirectory=/home/titus/projects/tct_scrooper
+ExecStart=/home/titus/projects/tct_scrooper/tct_scrooper
+Restart=always
+RestartSec=5
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=multi-user.target

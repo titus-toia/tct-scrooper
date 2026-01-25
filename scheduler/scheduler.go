@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"time"
 
 	"github.com/robfig/cron/v3"
 	"tct_scrooper/config"
+	"tct_scrooper/httputil"
 	"tct_scrooper/scraper"
 	"tct_scrooper/storage"
 )
@@ -16,25 +18,29 @@ type Scheduler struct {
 	cfg          *config.Config
 	orchestrator *scraper.Orchestrator
 	store        *storage.SQLiteStore
+	clients      *httputil.Clients
 	cron         *cron.Cron
 	ticker       *time.Ticker
 	stopCh       chan struct{}
 }
 
-func New(cfg *config.Config, orchestrator *scraper.Orchestrator, store *storage.SQLiteStore) *Scheduler {
+func New(cfg *config.Config, orchestrator *scraper.Orchestrator, store *storage.SQLiteStore, clients *httputil.Clients) *Scheduler {
 	return &Scheduler{
 		cfg:          cfg,
 		orchestrator: orchestrator,
 		store:        store,
+		clients:      clients,
 		cron:         cron.New(),
 		stopCh:       make(chan struct{}),
 	}
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
-	// Always start command polling (for TUI commands)
+	// Always start background runners
 	go s.pollCommands(ctx)
 	go s.pollResumes(ctx)
+	go s.pollHealthcheck(ctx)
+	go s.pollSync(ctx)
 
 	if s.cfg.Scheduler.Cron != "" {
 		log.Printf("Starting scheduler with cron: %s", s.cfg.Scheduler.Cron)
@@ -143,6 +149,78 @@ func (s *Scheduler) pollResumes(ctx context.Context) {
 						log.Printf("Resume error for %s: %v", siteID, err)
 					}
 				}
+			}
+		case <-s.stopCh:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Scheduler) pollHealthcheck(ctx context.Context) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			prop, url, err := s.store.GetOldestActiveProperty()
+			if err != nil {
+				log.Printf("Healthcheck error getting property: %v", err)
+				continue
+			}
+			if prop == nil || url == "" {
+				continue
+			}
+
+			req, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)
+			if err != nil {
+				log.Printf("Healthcheck error creating request: %v", err)
+				continue
+			}
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+			req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+			req.Header.Set("Accept-Language", "en-CA,en;q=0.9")
+
+			resp, err := s.clients.Scraping.Do(req)
+			if err != nil {
+				log.Printf("Healthcheck %s: request failed: %v", prop.ID[:8], err)
+				s.store.TouchProperty(prop.ID, time.Now()) // bump anyway to cycle through
+				continue
+			}
+			resp.Body.Close()
+
+			if resp.StatusCode == 200 {
+				log.Printf("Healthcheck %s: active (200)", prop.ID[:8])
+				s.store.TouchProperty(prop.ID, time.Now())
+			} else if resp.StatusCode == 404 || resp.StatusCode == 301 || resp.StatusCode == 302 {
+				log.Printf("Healthcheck %s: delisted (%d)", prop.ID[:8], resp.StatusCode)
+				s.store.MarkPropertyInactive(prop.ID)
+			} else {
+				log.Printf("Healthcheck %s: unexpected status %d", prop.ID[:8], resp.StatusCode)
+				s.store.TouchProperty(prop.ID, time.Now())
+			}
+		case <-s.stopCh:
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (s *Scheduler) pollSync(ctx context.Context) {
+	if s.cfg.Scheduler.SyncInterval <= 0 {
+		return
+	}
+	ticker := time.NewTicker(s.cfg.Scheduler.SyncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if err := s.orchestrator.SyncToSupabase(ctx); err != nil {
+				log.Printf("Periodic sync error: %v", err)
 			}
 		case <-s.stopCh:
 			return

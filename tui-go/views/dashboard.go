@@ -1,7 +1,11 @@
 package views
 
 import (
+	"bufio"
 	"fmt"
+	"os"
+	"os/exec"
+	"strings"
 	"time"
 
 	"tui-go/db"
@@ -19,6 +23,12 @@ type dashboardDataMsg struct {
 	unsyncCount int
 }
 
+type logTailMsg struct {
+	lines        []string
+	modTime      time.Time
+	daemonActive bool
+}
+
 type Dashboard struct {
 	db            *db.Client
 	width, height int
@@ -27,14 +37,29 @@ type Dashboard struct {
 	propCount     int
 	snapCount     int
 	unsyncCount   int
+	logLines      []string
+	logPath       string
+	logScroll     int       // scroll offset (0 = bottom/newest)
+	logViewport   int       // visible lines
+	logBuffer     int       // total lines to keep
+	logModTime    time.Time // last modification time of log file
+	daemonActive  bool      // whether systemd service is active
 }
 
-func NewDashboard(dbClient *db.Client) Dashboard {
-	return Dashboard{db: dbClient}
+func NewDashboard(dbClient *db.Client, logPath string) Dashboard {
+	if logPath == "" {
+		logPath = "daemon.log"
+	}
+	return Dashboard{
+		db:          dbClient,
+		logPath:     logPath,
+		logViewport: 30,
+		logBuffer:   200,
+	}
 }
 
 func (d Dashboard) Init() tea.Cmd {
-	return d.Refresh()
+	return tea.Batch(d.Refresh(), d.tailLog())
 }
 
 func (d Dashboard) Refresh() tea.Cmd {
@@ -46,6 +71,52 @@ func (d Dashboard) Refresh() tea.Cmd {
 		unsyncCount, _ := d.db.GetUnsyncedCount()
 		return dashboardDataMsg{stats, runs, propCount, snapCount, unsyncCount}
 	}
+}
+
+func (d Dashboard) tailLog() tea.Cmd {
+	return func() tea.Msg {
+		lines, modTime := readLastLines(d.logPath, d.logBuffer)
+		active := isDaemonActive()
+		return logTailMsg{lines, modTime, active}
+	}
+}
+
+func isDaemonActive() bool {
+	out, err := exec.Command("systemctl", "is-active", "tct_scrooper").Output()
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(out)) == "active"
+}
+
+func readLastLines(path string, n int) ([]string, time.Time) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return []string{"(no log file)"}, time.Time{}
+	}
+	modTime := info.ModTime()
+
+	f, err := os.Open(path)
+	if err != nil {
+		return []string{"(no log file)"}, time.Time{}
+	}
+	defer f.Close()
+
+	var allLines []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		allLines = append(allLines, scanner.Text())
+	}
+
+	if len(allLines) == 0 {
+		return []string{"(empty log)"}, modTime
+	}
+
+	start := len(allLines) - n
+	if start < 0 {
+		start = 0
+	}
+	return allLines[start:], modTime
 }
 
 func (d Dashboard) SetSize(w, h int) {
@@ -61,9 +132,45 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d.propCount = msg.propCount
 		d.snapCount = msg.snapCount
 		d.unsyncCount = msg.unsyncCount
+		return d, d.tailLog()
+	case logTailMsg:
+		d.logLines = msg.lines
+		d.logModTime = msg.modTime
+		d.daemonActive = msg.daemonActive
 	case tea.WindowSizeMsg:
 		d.width = msg.Width
 		d.height = msg.Height - 4
+	case tea.KeyMsg:
+		maxScroll := len(d.logLines) - d.logViewport
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		switch msg.String() {
+		case "up", "k":
+			d.logScroll++
+			if d.logScroll > maxScroll {
+				d.logScroll = maxScroll
+			}
+		case "down", "j":
+			d.logScroll--
+			if d.logScroll < 0 {
+				d.logScroll = 0
+			}
+		case "pgup":
+			d.logScroll += 10
+			if d.logScroll > maxScroll {
+				d.logScroll = maxScroll
+			}
+		case "pgdown":
+			d.logScroll -= 10
+			if d.logScroll < 0 {
+				d.logScroll = 0
+			}
+		case "home":
+			d.logScroll = maxScroll
+		case "end":
+			d.logScroll = 0
+		}
 	}
 	return d, nil
 }
@@ -72,6 +179,7 @@ func (d Dashboard) View() string {
 	statCards := d.renderStatCards()
 	siteCards := d.renderSiteCards()
 	runsTable := d.renderRunsTable()
+	logTail := d.renderLogTail()
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		styles.Title.Render("Dashboard"),
@@ -81,7 +189,85 @@ func (d Dashboard) View() string {
 		"",
 		styles.Title.Render("Recent Runs"),
 		runsTable,
+		"",
+		logTail,
 	)
+}
+
+func (d Dashboard) renderLogTail() string {
+	if len(d.logLines) == 0 {
+		content := styles.Muted.Render("(waiting for logs...)")
+		return styles.LogBox.Width(d.width - 4).Render(content)
+	}
+
+	// Calculate visible window (from end, with scroll offset)
+	total := len(d.logLines)
+	endIdx := total - d.logScroll
+	startIdx := endIdx - d.logViewport
+	if startIdx < 0 {
+		startIdx = 0
+	}
+	if endIdx > total {
+		endIdx = total
+	}
+
+	visibleLines := d.logLines[startIdx:endIdx]
+	maxLineWidth := d.width - 8
+
+	var lines []string
+	for _, line := range visibleLines {
+		styled := d.styleLogLine(line, maxLineWidth)
+		lines = append(lines, styled)
+	}
+
+	content := strings.Join(lines, "\n")
+
+	// Status indicator based on daemon status and scroll position
+	scrollInfo := ""
+	if !d.daemonActive {
+		scrollInfo = styles.StatusError.Render(" ● STOPPED ")
+	} else if d.logScroll > 0 {
+		scrollInfo = styles.StatusPending.Render(fmt.Sprintf(" ↑%d ", d.logScroll))
+	} else {
+		scrollInfo = styles.StatusSuccess.Render(" ● LIVE ")
+	}
+
+	header := styles.Title.Render("Live Log") + scrollInfo +
+		styles.Muted.Render(fmt.Sprintf("[%d-%d/%d]", startIdx+1, endIdx, total))
+
+	boxContent := header + "\n" + content
+	return styles.LogBox.Width(d.width - 4).Render(boxContent)
+}
+
+func (d Dashboard) styleLogLine(line string, maxWidth int) string {
+	line = truncate(line, maxWidth)
+
+	// Parse timestamp if present (format: 2024/01/25 10:30:45)
+	if len(line) > 19 && (line[4] == '/' || line[10] == ' ') {
+		timestamp := line[:19]
+		rest := line[19:]
+
+		styledTs := styles.LogTimestamp.Render(timestamp)
+
+		if strings.Contains(rest, "ERROR") || strings.Contains(rest, "error") {
+			return styledTs + styles.StatusError.Render(rest)
+		} else if strings.Contains(rest, "WARN") || strings.Contains(rest, "warn") {
+			return styledTs + styles.StatusPending.Render(rest)
+		} else if strings.Contains(rest, "INFO") || strings.Contains(rest, "info") {
+			return styledTs + styles.LogInfo.Render(rest)
+		}
+		return styledTs + rest
+	}
+
+	// No timestamp - style whole line
+	if strings.Contains(line, "ERROR") || strings.Contains(line, "error") {
+		return styles.StatusError.Render(line)
+	} else if strings.Contains(line, "WARN") || strings.Contains(line, "warn") {
+		return styles.StatusPending.Render(line)
+	} else if strings.Contains(line, "INFO") || strings.Contains(line, "info") {
+		return styles.LogInfo.Render(line)
+	}
+	return line
 }
 
 func (d Dashboard) renderStatCards() string {

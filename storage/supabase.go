@@ -101,7 +101,7 @@ func BuildSupabaseProperty(prop *models.Property, snapshots []models.Snapshot, s
 		Description:      latest.Description,
 		Photos:           photosJSON,
 		Realtor:          latest.Realtor,
-		IsActive:         detectIfActive(snapshots),
+		IsActive:         prop.IsActive,
 		History:          historyJSON,
 		TimesListed:      prop.TimesListed,
 		FirstSeenAt:      prop.FirstSeenAt,
@@ -165,14 +165,6 @@ func buildHistory(snapshots []models.Snapshot) []models.HistoryEvent {
 	}
 
 	return events
-}
-
-func detectIfActive(snapshots []models.Snapshot) bool {
-	if len(snapshots) == 0 {
-		return false
-	}
-	latest := snapshots[len(snapshots)-1]
-	return time.Since(latest.ScrapedAt) < 48*time.Hour
 }
 
 func calcDaysOnMarket(lastSnap *models.Snapshot, firstSnap *models.Snapshot) int {

@@ -108,3 +108,7 @@ debug_*.png
 
 # Compiled binaries
 tui-go/tui-go
+
+# Daemon logs
+daemon.log
+daemon.log.1
