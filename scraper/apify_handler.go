@@ -64,11 +64,14 @@ func (h *ApifyHandler) Scrape(ctx context.Context, region config.Region) ([]mode
 	}
 
 	isIncremental := h.hasExistingData()
-	if isIncremental {
-		log.Printf("Apify: incremental scrape for %s (days=1)", region.GeoName)
-	} else {
-		log.Printf("Apify: full backfill for %s (days=30)", region.GeoName)
+	daysBack := h.calculateDaysBack()
+
+	// Set days on canadesk adapter if applicable
+	if cdk, ok := h.adapter.(*CanadeskAdapter); ok {
+		cdk.DaysBack = daysBack
 	}
+
+	log.Printf("Apify: scraping %s (days=%d, incremental=%v)", region.GeoName, daysBack, isIncremental)
 
 	runID, err := h.startRun(ctx, region, isIncremental)
 	if err != nil {
@@ -102,6 +105,24 @@ func (h *ApifyHandler) hasExistingData() bool {
 		return false
 	}
 	return count > 0
+}
+
+func (h *ApifyHandler) calculateDaysBack() int {
+	if h.store == nil {
+		return 30
+	}
+	lastRun, err := h.store.GetLastRunTime(h.cfg.ID)
+	if err != nil || lastRun.IsZero() {
+		return 30
+	}
+	days := int(time.Since(lastRun).Hours()/24) + 1
+	if days > 30 {
+		days = 30
+	}
+	if days < 1 {
+		days = 1
+	}
+	return days
 }
 
 func (h *ApifyHandler) startRun(ctx context.Context, region config.Region, isIncremental bool) (string, error) {

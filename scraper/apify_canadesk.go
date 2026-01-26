@@ -10,7 +10,9 @@ import (
 )
 
 // CanadeskAdapter handles canadesk/realtor-canada actor
-type CanadeskAdapter struct{}
+type CanadeskAdapter struct {
+	DaysBack int // set by handler before BuildInput
+}
 
 func (a *CanadeskAdapter) ActorID() string {
 	return "canadesk~realtor-canada"
@@ -22,10 +24,13 @@ func (a *CanadeskAdapter) BuildInput(region config.Region, isIncremental bool) m
 		region.LatMax, region.LngMin, region.LatMin, region.LngMax,
 	)
 
-	// Incremental: last 1 day, Full: last 30 days
-	days := 30
-	if isIncremental {
-		days = 1
+	days := a.DaysBack
+	if days == 0 {
+		// fallback to old behavior if not set
+		days = 30
+		if isIncremental {
+			days = 1
+		}
 	}
 
 	return map[string]interface{}{
