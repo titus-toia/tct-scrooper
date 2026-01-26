@@ -45,7 +45,6 @@ htmlcov/
 dist/
 bin/
 /vendor/
-go.sum
 
 # IDE & Editors
 .vscode/
