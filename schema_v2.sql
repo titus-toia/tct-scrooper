@@ -70,6 +70,7 @@ CREATE TABLE listings (
 	last_seen TIMESTAMPTZ DEFAULT NOW(),
 	listed_at TIMESTAMPTZ DEFAULT NOW(),
 	delisted_at TIMESTAMPTZ,
+	enrichment_attempts INTEGER DEFAULT 0,
 	created_at TIMESTAMPTZ DEFAULT NOW(),
 	updated_at TIMESTAMPTZ DEFAULT NOW(),
 	UNIQUE(source, external_id)

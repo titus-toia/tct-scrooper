@@ -155,9 +155,9 @@ func (s *PostgresStore) UpsertListing(ctx context.Context, l *models.Listing) er
 			id, property_id, source, external_id, url, type, status, price, currency,
 			fees, property_type, beds, baths, sqft, sqft_lot, floor, stories,
 			description, features, raw_data, last_seen, listed_at, delisted_at,
-			created_at, updated_at
+			enrichment_attempts, created_at, updated_at
 		) VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
 		)
 		ON CONFLICT (source, external_id) DO UPDATE SET
 			url = COALESCE(EXCLUDED.url, listings.url),
@@ -176,6 +176,7 @@ func (s *PostgresStore) UpsertListing(ctx context.Context, l *models.Listing) er
 			raw_data = EXCLUDED.raw_data,
 			last_seen = EXCLUDED.last_seen,
 			delisted_at = EXCLUDED.delisted_at,
+			enrichment_attempts = COALESCE(EXCLUDED.enrichment_attempts, listings.enrichment_attempts),
 			updated_at = NOW()
 		RETURNING id`
 
@@ -183,7 +184,7 @@ func (s *PostgresStore) UpsertListing(ctx context.Context, l *models.Listing) er
 		l.ID, l.PropertyID, l.Source, l.ExternalID, l.URL, l.Type, l.Status, l.Price, l.Currency,
 		l.Fees, l.PropertyType, l.Beds, l.Baths, l.SqFt, l.SqFtLot, l.Floor, l.Stories,
 		l.Description, l.Features, l.RawData, l.LastSeen, l.ListedAt, l.DelistedAt,
-		l.CreatedAt, l.UpdatedAt,
+		l.EnrichmentAttempts, l.CreatedAt, l.UpdatedAt,
 	).Scan(&l.ID)
 }
 
@@ -192,7 +193,7 @@ func (s *PostgresStore) GetListingBySourceAndExternalID(ctx context.Context, sou
 		SELECT id, property_id, source, external_id, url, type, status, price, currency,
 			fees, property_type, beds, baths, sqft, sqft_lot, floor, stories,
 			description, features, raw_data, last_seen, listed_at, delisted_at,
-			created_at, updated_at
+			enrichment_attempts, created_at, updated_at
 		FROM listings WHERE source = $1 AND external_id = $2`
 
 	var l models.Listing
@@ -200,7 +201,31 @@ func (s *PostgresStore) GetListingBySourceAndExternalID(ctx context.Context, sou
 		&l.ID, &l.PropertyID, &l.Source, &l.ExternalID, &l.URL, &l.Type, &l.Status, &l.Price, &l.Currency,
 		&l.Fees, &l.PropertyType, &l.Beds, &l.Baths, &l.SqFt, &l.SqFtLot, &l.Floor, &l.Stories,
 		&l.Description, &l.Features, &l.RawData, &l.LastSeen, &l.ListedAt, &l.DelistedAt,
-		&l.CreatedAt, &l.UpdatedAt,
+		&l.EnrichmentAttempts, &l.CreatedAt, &l.UpdatedAt,
+	)
+	if err == pgx.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &l, nil
+}
+
+func (s *PostgresStore) GetListingByID(ctx context.Context, id uuid.UUID) (*models.Listing, error) {
+	query := `
+		SELECT id, property_id, source, external_id, url, type, status, price, currency,
+			fees, property_type, beds, baths, sqft, sqft_lot, floor, stories,
+			description, features, raw_data, last_seen, listed_at, delisted_at,
+			enrichment_attempts, created_at, updated_at
+		FROM listings WHERE id = $1`
+
+	var l models.Listing
+	err := s.pool.QueryRow(ctx, query, id).Scan(
+		&l.ID, &l.PropertyID, &l.Source, &l.ExternalID, &l.URL, &l.Type, &l.Status, &l.Price, &l.Currency,
+		&l.Fees, &l.PropertyType, &l.Beds, &l.Baths, &l.SqFt, &l.SqFtLot, &l.Floor, &l.Stories,
+		&l.Description, &l.Features, &l.RawData, &l.LastSeen, &l.ListedAt, &l.DelistedAt,
+		&l.EnrichmentAttempts, &l.CreatedAt, &l.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -216,7 +241,7 @@ func (s *PostgresStore) GetActiveListingForProperty(ctx context.Context, propert
 		SELECT id, property_id, source, external_id, url, type, status, price, currency,
 			fees, property_type, beds, baths, sqft, sqft_lot, floor, stories,
 			description, features, raw_data, last_seen, listed_at, delisted_at,
-			created_at, updated_at
+			enrichment_attempts, created_at, updated_at
 		FROM listings WHERE property_id = $1 AND status = 'active'
 		LIMIT 1`
 
@@ -225,7 +250,7 @@ func (s *PostgresStore) GetActiveListingForProperty(ctx context.Context, propert
 		&l.ID, &l.PropertyID, &l.Source, &l.ExternalID, &l.URL, &l.Type, &l.Status, &l.Price, &l.Currency,
 		&l.Fees, &l.PropertyType, &l.Beds, &l.Baths, &l.SqFt, &l.SqFtLot, &l.Floor, &l.Stories,
 		&l.Description, &l.Features, &l.RawData, &l.LastSeen, &l.ListedAt, &l.DelistedAt,
-		&l.CreatedAt, &l.UpdatedAt,
+		&l.EnrichmentAttempts, &l.CreatedAt, &l.UpdatedAt,
 	)
 	if err == pgx.ErrNoRows {
 		return nil, nil
@@ -617,7 +642,7 @@ func (s *PostgresStore) GetStaleActiveListings(ctx context.Context, staleDuratio
 		SELECT id, property_id, source, external_id, url, type, status, price, currency,
 			fees, property_type, beds, baths, sqft, sqft_lot, floor, stories,
 			description, features, raw_data, last_seen, listed_at, delisted_at,
-			created_at, updated_at
+			enrichment_attempts, created_at, updated_at
 		FROM listings
 		WHERE status = 'active' AND last_seen < $1
 		ORDER BY last_seen
@@ -637,7 +662,7 @@ func (s *PostgresStore) GetStaleActiveListings(ctx context.Context, staleDuratio
 			&l.ID, &l.PropertyID, &l.Source, &l.ExternalID, &l.URL, &l.Type, &l.Status, &l.Price, &l.Currency,
 			&l.Fees, &l.PropertyType, &l.Beds, &l.Baths, &l.SqFt, &l.SqFtLot, &l.Floor, &l.Stories,
 			&l.Description, &l.Features, &l.RawData, &l.LastSeen, &l.ListedAt, &l.DelistedAt,
-			&l.CreatedAt, &l.UpdatedAt,
+			&l.EnrichmentAttempts, &l.CreatedAt, &l.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

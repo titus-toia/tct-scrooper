@@ -5,9 +5,9 @@ import (
 	"os"
 	"time"
 
-	"tui-go/db"
-	"tui-go/styles"
-	"tui-go/views"
+	"tui/db"
+	"tui/styles"
+	"tui/views"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -206,9 +206,15 @@ func (m model) renderStatusBar() string {
 }
 
 func main() {
-	dbPath := os.Getenv("DB_PATH")
-	if dbPath == "" {
-		dbPath = "scraper.db"
+	postgresURL := os.Getenv("SUPABASE_DB_URL")
+	if postgresURL == "" {
+		fmt.Fprintf(os.Stderr, "Error: SUPABASE_DB_URL environment variable is required\n")
+		os.Exit(1)
+	}
+
+	sqlitePath := os.Getenv("DB_PATH")
+	if sqlitePath == "" {
+		sqlitePath = "scraper.db"
 	}
 
 	logPath := os.Getenv("LOG_PATH")
@@ -216,9 +222,9 @@ func main() {
 		logPath = "daemon.log"
 	}
 
-	dbClient, err := db.New(dbPath)
+	dbClient, err := db.New(postgresURL, sqlitePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error opening database: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error connecting to database: %v\n", err)
 		os.Exit(1)
 	}
 	defer dbClient.Close()

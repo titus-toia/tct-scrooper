@@ -424,10 +424,11 @@ func (w *EnrichmentWorker) Run(ctx context.Context, batchSize int, interval time
 
 func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
 	// Get listings that need enrichment (no features set yet)
+	// We only try listings with < 3 attempts
 	query := `
-		SELECT id, url
+		SELECT id, url, enrichment_attempts
 		FROM listings
-		WHERE status = 'active' AND features IS NULL AND url IS NOT NULL
+		WHERE status = 'active' AND features IS NULL AND url IS NOT NULL AND enrichment_attempts < 3
 		ORDER BY created_at
 		LIMIT $1`
 
@@ -439,14 +440,15 @@ func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
 	defer rows.Close()
 
 	type listingToEnrich struct {
-		ID  uuid.UUID
-		URL string
+		ID       uuid.UUID
+		URL      string
+		Attempts int
 	}
 
 	var listings []listingToEnrich
 	for rows.Next() {
 		var l listingToEnrich
-		if err := rows.Scan(&l.ID, &l.URL); err != nil {
+		if err := rows.Scan(&l.ID, &l.URL, &l.Attempts); err != nil {
 			log.Printf("Enrichment: scan error: %v", err)
 			continue
 		}
@@ -463,8 +465,15 @@ func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
 		data, err := w.Enrich(ctx, l.URL)
 		if err != nil {
 			log.Printf("Enrichment: failed to enrich %s: %v", l.URL, err)
-			// Mark as enriched (with empty features) to avoid retry loop
-			w.store.Pool().Exec(ctx, `UPDATE listings SET features = '{}' WHERE id = $1`, l.ID)
+			
+			// Increment attempts
+			w.store.Pool().Exec(ctx, `UPDATE listings SET enrichment_attempts = enrichment_attempts + 1, updated_at = NOW() WHERE id = $1`, l.ID)
+			
+			// If we reached max attempts, mark as failed (by setting empty features so it stops retrying)
+			if l.Attempts+1 >= 3 {
+				log.Printf("Enrichment: max attempts reached for %s, giving up", l.ID)
+				w.store.Pool().Exec(ctx, `UPDATE listings SET features = '{}' WHERE id = $1`, l.ID)
+			}
 			continue
 		}
 

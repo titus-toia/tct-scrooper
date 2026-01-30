@@ -383,7 +383,7 @@ func (s *ListingService) MarkDelisted(ctx context.Context, listingID uuid.UUID) 
 	now := time.Now()
 
 	// Get the listing first
-	listing, err := s.store.GetListingBySourceAndExternalID(ctx, "", "") // We need a GetListingByID method
+	listing, err := s.store.GetListingByID(ctx, listingID)
 	if err != nil {
 		return fmt.Errorf("get listing: %w", err)
 	}

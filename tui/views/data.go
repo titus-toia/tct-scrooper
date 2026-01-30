@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"tui-go/db"
-	"tui-go/styles"
+	"tui/db"
+	"tui/styles"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -16,17 +16,17 @@ type dataMsg struct {
 	total      int
 }
 
-type snapshotsMsg struct {
-	snapshots []db.Snapshot
+type listingsMsg struct {
+	listings []db.Listing
 }
 
 type Data struct {
 	db             *db.Client
 	width, height  int
 	properties     []db.Property
-	snapshots      []db.Snapshot
+	listings       []db.Listing
 	selectedRow    int
-	unsyncedOnly   bool
+	activeOnly     bool
 	selectedPropID string
 	dbPage         int // current database page (0-indexed)
 	dbPageSize     int // items per database page
@@ -43,7 +43,7 @@ func (d Data) Init() tea.Cmd {
 
 func (d Data) Refresh() tea.Cmd {
 	return func() tea.Msg {
-		props, _ := d.db.GetProperties(d.dbPageSize, d.dbPage*d.dbPageSize, d.unsyncedOnly)
+		props, _ := d.db.GetProperties(d.dbPageSize, d.dbPage*d.dbPageSize, d.activeOnly)
 		total, _ := d.db.GetPropertyCount()
 		return dataMsg{props, total}
 	}
@@ -55,8 +55,8 @@ func (d Data) SetSize(w, h int) {
 }
 
 func (d Data) GetSelectedURL() string {
-	if len(d.snapshots) > 0 {
-		return d.snapshots[0].URL
+	if len(d.listings) > 0 {
+		return d.listings[0].URL
 	}
 	return ""
 }
@@ -70,11 +70,11 @@ func (d Data) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			d.selectedRow = 0
 		}
 		if len(d.properties) > 0 {
-			return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+			return d, d.loadListings(d.properties[d.selectedRow].ID)
 		}
 
-	case snapshotsMsg:
-		d.snapshots = msg.snapshots
+	case listingsMsg:
+		d.listings = msg.listings
 
 	case tea.WindowSizeMsg:
 		d.width = msg.Width
@@ -86,13 +86,13 @@ func (d Data) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if d.selectedRow > 0 {
 				d.selectedRow--
 				if len(d.properties) > 0 {
-					return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+					return d, d.loadListings(d.properties[d.selectedRow].ID)
 				}
 			}
 		case "down", "j":
 			if len(d.properties) > 0 && d.selectedRow < len(d.properties)-1 {
 				d.selectedRow++
-				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+				return d, d.loadListings(d.properties[d.selectedRow].ID)
 			}
 		case "pgdown", "ctrl+d":
 			if len(d.properties) > 0 {
@@ -100,7 +100,7 @@ func (d Data) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if d.selectedRow >= len(d.properties) {
 					d.selectedRow = len(d.properties) - 1
 				}
-				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+				return d, d.loadListings(d.properties[d.selectedRow].ID)
 			}
 		case "pgup", "ctrl+u":
 			if len(d.properties) > 0 {
@@ -108,20 +108,20 @@ func (d Data) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if d.selectedRow < 0 {
 					d.selectedRow = 0
 				}
-				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+				return d, d.loadListings(d.properties[d.selectedRow].ID)
 			}
 		case "home", "g":
 			if len(d.properties) > 0 {
 				d.selectedRow = 0
-				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+				return d, d.loadListings(d.properties[d.selectedRow].ID)
 			}
 		case "end", "G":
 			if len(d.properties) > 0 {
 				d.selectedRow = len(d.properties) - 1
-				return d, d.loadSnapshots(d.properties[d.selectedRow].ID)
+				return d, d.loadListings(d.properties[d.selectedRow].ID)
 			}
-		case "u":
-			d.unsyncedOnly = !d.unsyncedOnly
+		case "a":
+			d.activeOnly = !d.activeOnly
 			d.selectedRow = 0
 			return d, d.Refresh()
 		case "1", "2", "3", "4", "5", "6", "7", "8", "9", "0":
@@ -155,11 +155,11 @@ func (d Data) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return d, nil
 }
 
-func (d Data) loadSnapshots(propID string) tea.Cmd {
+func (d Data) loadListings(propID string) tea.Cmd {
 	d.selectedPropID = propID
 	return func() tea.Msg {
-		snaps, _ := d.db.GetSnapshotsForProperty(propID)
-		return snapshotsMsg{snaps}
+		listings, _ := d.db.GetListingsForProperty(propID)
+		return listingsMsg{listings}
 	}
 }
 
@@ -183,8 +183,8 @@ func (d Data) getTotalDBPages() int {
 
 func (d Data) View() string {
 	filterStatus := "All"
-	if d.unsyncedOnly {
-		filterStatus = "Unsynced only"
+	if d.activeOnly {
+		filterStatus = "Active only"
 	}
 
 	// Position counter - show global position across all pages
@@ -198,7 +198,7 @@ func (d Data) View() string {
 	header := styles.Title.Render("Properties") +
 		styles.StatValue.Render(position) +
 		styles.StatLabel.Render(pageInfo) +
-		"  " + styles.Muted.Render(fmt.Sprintf("[u] Filter: %s  [1-0] Page  [[ ]] Prev/Next", filterStatus))
+		"  " + styles.Muted.Render(fmt.Sprintf("[a] Filter: %s  [1-0] Page  [[ ]] Prev/Next", filterStatus))
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		header,
@@ -209,8 +209,8 @@ func (d Data) View() string {
 }
 
 func (d Data) renderPropertiesTable() string {
-	header := fmt.Sprintf("%-35s %-12s %10s %4s %4s %7s %-8s %5s %6s",
-		"Address", "City", "Price", "Bed", "Bath", "SqFt", "Type", "List", "Sync")
+	header := fmt.Sprintf("%-35s %-12s %10s %4s %4s %7s %-8s %5s",
+		"Address", "City", "Price", "Bed", "Bath", "SqFt", "Type", "List")
 	rows := styles.TableHeader.Render(header) + "\n"
 
 	visibleRows := d.getVisibleRows()
@@ -232,13 +232,9 @@ func (d Data) renderPropertiesTable() string {
 		if p.LatestPrice > 0 {
 			price = fmt.Sprintf("$%d", p.LatestPrice/1000) + "K"
 		}
-		synced := styles.StatusPending.Render("○")
-		if p.Synced {
-			synced = styles.StatusSuccess.Render("✓")
-		}
 
-		row := fmt.Sprintf("%-35s %-12s %10s %4d %4d %7s %-8s %5d %6s",
-			truncate(p.NormalizedAddress, 35),
+		row := fmt.Sprintf("%-35s %-12s %10s %4d %4d %7s %-8s %5d",
+			truncate(p.Address, 35),
 			truncate(p.City, 12),
 			price,
 			p.Beds,
@@ -246,7 +242,6 @@ func (d Data) renderPropertiesTable() string {
 			formatSqft(p.Sqft),
 			truncate(p.PropertyType, 8),
 			p.TimesListed,
-			synced,
 		)
 
 		if i == d.selectedRow {
@@ -279,37 +274,45 @@ func (d Data) renderBottomPanel() string {
 }
 
 func (d Data) renderPriceHistory() string {
-	if len(d.snapshots) == 0 {
+	if len(d.listings) == 0 {
 		return styles.Muted.Render("Select a property")
 	}
 
-	header := fmt.Sprintf("%-12s %-10s %12s", "Date", "Site", "Price")
+	header := fmt.Sprintf("%-12s %-10s %-8s %12s", "Date", "Source", "Status", "Price")
 	rows := styles.TableHeader.Render(header) + "\n"
 
 	maxRows := 8
-	if len(d.snapshots) < maxRows {
-		maxRows = len(d.snapshots)
+	if len(d.listings) < maxRows {
+		maxRows = len(d.listings)
 	}
 
-	var prevPrice int
+	var prevPrice int64
 	for i := 0; i < maxRows; i++ {
-		s := d.snapshots[i]
-		date := s.ScrapedAt.Format("2006-01-02")
-		price := fmt.Sprintf("$%d", s.Price/1000) + "K"
+		l := d.listings[i]
+		date := l.ListedAt.Format("2006-01-02")
+		price := fmt.Sprintf("$%d", l.Price/1000) + "K"
 
 		priceStyle := lipgloss.NewStyle()
-		if i > 0 && prevPrice > 0 && s.Price != prevPrice {
-			if s.Price > prevPrice {
+		if i > 0 && prevPrice > 0 && l.Price != prevPrice {
+			if l.Price > prevPrice {
 				priceStyle = styles.StatusError
 			} else {
 				priceStyle = styles.StatusSuccess
 			}
 		}
-		prevPrice = s.Price
+		prevPrice = l.Price
 
-		row := fmt.Sprintf("%-12s %-10s %12s",
+		statusStyle := styles.Muted
+		if l.Status == "active" {
+			statusStyle = styles.StatusSuccess
+		} else if l.Status == "delisted" {
+			statusStyle = styles.StatusError
+		}
+
+		row := fmt.Sprintf("%-12s %-10s %s %12s",
 			date,
-			truncate(s.SiteID, 10),
+			truncate(l.Source, 10),
+			statusStyle.Render(fmt.Sprintf("%-8s", truncate(l.Status, 8))),
 			priceStyle.Render(price),
 		)
 		rows += row + "\n"
@@ -318,18 +321,19 @@ func (d Data) renderPriceHistory() string {
 }
 
 func (d Data) renderListingDetails() string {
-	if len(d.snapshots) == 0 {
+	if len(d.listings) == 0 {
 		return styles.Muted.Render("Select a property")
 	}
 
-	s := d.snapshots[0]
+	l := d.listings[0]
 	lines := []string{
-		fmt.Sprintf("MLS#: %s", s.ListingID),
+		fmt.Sprintf("MLS#: %s", l.ExternalID),
+		fmt.Sprintf("Status: %s", l.Status),
 		"",
 	}
 
-	if s.Description != "" {
-		desc := s.Description
+	if l.Description != "" {
+		desc := l.Description
 		if len(desc) > 200 {
 			desc = desc[:200] + "..."
 		}
@@ -338,17 +342,19 @@ func (d Data) renderListingDetails() string {
 		lines = append(lines, "")
 	}
 
-	if s.Realtor.AgentName != "" {
-		lines = append(lines, styles.StatLabel.Render("Agent: ")+s.Realtor.AgentName)
+	if l.Agent != nil {
+		if l.Agent.Name != "" {
+			lines = append(lines, styles.StatLabel.Render("Agent: ")+l.Agent.Name)
+		}
+		if l.Agent.Phone != "" {
+			lines = append(lines, styles.StatLabel.Render("Phone: ")+l.Agent.Phone)
+		}
 	}
-	if s.Realtor.AgentPhone != "" {
-		lines = append(lines, styles.StatLabel.Render("Phone: ")+s.Realtor.AgentPhone)
-	}
-	if s.Realtor.CompanyName != "" {
-		lines = append(lines, styles.StatLabel.Render("Company: ")+s.Realtor.CompanyName)
+	if l.Brokerage != nil && l.Brokerage.Name != "" {
+		lines = append(lines, styles.StatLabel.Render("Brokerage: ")+l.Brokerage.Name)
 	}
 
-	lines = append(lines, "", styles.Muted.Render(truncate(s.URL, d.width/2-6)))
+	lines = append(lines, "", styles.Muted.Render(truncate(l.URL, d.width/2-6)))
 
 	return strings.Join(lines, "\n")
 }

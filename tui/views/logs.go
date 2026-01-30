@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"tui-go/db"
-	"tui-go/styles"
+	"tui/db"
+	"tui/styles"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -172,8 +172,8 @@ func (l Logs) formatLog(log db.ScrapeLog) string {
 	}
 
 	site := ""
-	if log.SiteID != nil {
-		site = fmt.Sprintf("[%s] ", *log.SiteID)
+	if log.SourceID != nil {
+		site = fmt.Sprintf("[%s] ", *log.SourceID)
 	}
 
 	msg := log.Message

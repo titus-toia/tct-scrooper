@@ -61,13 +61,15 @@ type Listing struct {
 	Stories      int             `json:"stories" db:"stories"`
 	Description  string          `json:"description" db:"description"`
 	Features     json.RawMessage `json:"features" db:"features"`
-	RawData      json.RawMessage `json:"raw_data" db:"raw_data"`
-	LastSeen     time.Time       `json:"last_seen" db:"last_seen"`
-	ListedAt     time.Time       `json:"listed_at" db:"listed_at"`
-	DelistedAt   *time.Time      `json:"delisted_at" db:"delisted_at"`
-	CreatedAt    time.Time       `json:"created_at" db:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at" db:"updated_at"`
-}
+		RawData     json.RawMessage `json:"raw_data" db:"raw_data"`
+		LastSeen    time.Time       `json:"last_seen" db:"last_seen"`
+		ListedAt    time.Time       `json:"listed_at" db:"listed_at"`
+		DelistedAt  *time.Time      `json:"delisted_at" db:"delisted_at"`
+		EnrichmentAttempts int         `json:"enrichment_attempts" db:"enrichment_attempts"`
+		CreatedAt   time.Time       `json:"created_at" db:"created_at"`
+		UpdatedAt   time.Time       `json:"updated_at" db:"updated_at"`
+	}
+	
 
 // Media represents an image, video, or document
 type Media struct {

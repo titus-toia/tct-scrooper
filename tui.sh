@@ -1,16 +1,14 @@
 #!/bin/bash
-# Run the TCT Scrooper TUI
+# Run the TCT Scrooper Go TUI
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-VENV_DIR="$SCRIPT_DIR/.venv"
+cd "$SCRIPT_DIR"
 
-# Check if venv exists
-if [ ! -d "$VENV_DIR" ]; then
-	echo "Virtual environment not found. Running setup..."
-	bash "$SCRIPT_DIR/tui/setup.sh"
+# Build if needed
+if [ ! -f "tui/tui" ] || [ "tui/main.go" -nt "tui/tui" ]; then
+	echo "Building..."
+	cd tui && go build -o tui . && cd ..
 fi
 
-# Activate and run
-source "$VENV_DIR/bin/activate"
-cd "$SCRIPT_DIR"
-python run_tui.py "$@"
+# Run
+DB_PATH="${DB_PATH:-scraper.db}" LOG_PATH="${LOG_PATH:-daemon.log}" ./tui/tui "$@"

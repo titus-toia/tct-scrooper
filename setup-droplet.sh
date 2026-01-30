@@ -39,9 +39,6 @@ apt-get install -y \
 	git \
 	sqlite3 \
 	postgresql-client \
-	python3 \
-	python3-pip \
-	python3-venv \
 	curl \
 	wget \
 	unzip \
@@ -91,17 +88,10 @@ fi
 log "Building scrooper..."
 sudo -u $APP_USER /usr/local/go/bin/go build -o tct_scrooper
 
-# Set up Python TUI
-log "Setting up Python TUI..."
-cd "$APP_DIR"
-sudo -u $APP_USER python3 -m venv .venv
-sudo -u $APP_USER .venv/bin/pip install --upgrade pip
-sudo -u $APP_USER .venv/bin/pip install textual aiosqlite
-
 # Build Go TUI
-log "Building Go TUI..."
-cd "$APP_DIR/tui-go"
-sudo -u $APP_USER /usr/local/go/bin/go build -o tui-go
+log "Building TUI..."
+cd "$APP_DIR/tui"
+sudo -u $APP_USER /usr/local/go/bin/go build -o tui
 
 # Install systemd service
 log "Installing systemd service..."
@@ -147,11 +137,8 @@ case "\$1" in
   logs)
     journalctl -u tct_scrooper -f
     ;;
-  tui)
-    cd $APP_DIR && ./tui-go/tui-go
-    ;;
-  tui-py)
-    cd $APP_DIR && .venv/bin/python run_tui.py
+  tui|top)
+    cd $APP_DIR && ./tui/tui
     ;;
   *)
     echo "TCT Scrooper - Property scraper daemon"
@@ -164,8 +151,8 @@ case "\$1" in
     echo "  restart  Restart the daemon"
     echo "  status   Check daemon status"
     echo "  logs     Tail daemon logs (Ctrl+C to exit)"
-    echo "  tui      Launch Go TUI"
-    echo "  tui-py   Launch Python TUI"
+    echo "  tui      Launch TUI"
+    echo "  top      Launch TUI (alias)"
     ;;
 esac
 EOF

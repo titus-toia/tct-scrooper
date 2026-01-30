@@ -8,19 +8,19 @@ import (
 	"strings"
 	"time"
 
-	"tui-go/db"
-	"tui-go/styles"
+	"tui/db"
+	"tui/styles"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
 type dashboardDataMsg struct {
-	stats       []db.SiteStats
-	runs        []db.ScrapeRun
-	propCount   int
-	snapCount   int
-	unsyncCount int
+	stats         []db.SiteStats
+	runs          []db.ScrapeRun
+	propCount     int
+	listingCount  int
+	activeCount   int
 }
 
 type logTailMsg struct {
@@ -35,8 +35,8 @@ type Dashboard struct {
 	stats         []db.SiteStats
 	runs          []db.ScrapeRun
 	propCount     int
-	snapCount     int
-	unsyncCount   int
+	listingCount  int
+	activeCount   int
 	logLines      []string
 	logPath       string
 	logScroll     int       // scroll offset (0 = bottom/newest)
@@ -67,9 +67,9 @@ func (d Dashboard) Refresh() tea.Cmd {
 		stats, _ := d.db.GetSiteStats()
 		runs, _ := d.db.GetRecentRuns(10)
 		propCount, _ := d.db.GetPropertyCount()
-		snapCount, _ := d.db.GetSnapshotCount()
-		unsyncCount, _ := d.db.GetUnsyncedCount()
-		return dashboardDataMsg{stats, runs, propCount, snapCount, unsyncCount}
+		listingCount, _ := d.db.GetListingCount()
+		activeCount, _ := d.db.GetActiveListingCount()
+		return dashboardDataMsg{stats, runs, propCount, listingCount, activeCount}
 	}
 }
 
@@ -130,8 +130,8 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d.stats = msg.stats
 		d.runs = msg.runs
 		d.propCount = msg.propCount
-		d.snapCount = msg.snapCount
-		d.unsyncCount = msg.unsyncCount
+		d.listingCount = msg.listingCount
+		d.activeCount = msg.activeCount
 		return d, d.tailLog()
 	case logTailMsg:
 		d.logLines = msg.lines
@@ -273,8 +273,8 @@ func (d Dashboard) styleLogLine(line string, maxWidth int) string {
 func (d Dashboard) renderStatCards() string {
 	cards := []string{
 		d.renderStatCard("Properties", fmt.Sprintf("%d", d.propCount)),
-		d.renderStatCard("Snapshots", fmt.Sprintf("%d", d.snapCount)),
-		d.renderStatCard("Unsynced", fmt.Sprintf("%d", d.unsyncCount)),
+		d.renderStatCard("Listings", fmt.Sprintf("%d", d.listingCount)),
+		d.renderStatCard("Active", fmt.Sprintf("%d", d.activeCount)),
 		d.renderStatCard("Sites", fmt.Sprintf("%d", len(d.stats))),
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, cards...)
@@ -322,17 +322,12 @@ func (d Dashboard) renderSiteCard(s db.SiteStats) string {
 		lastRun = relativeTime(*s.LastRunAt)
 	}
 
-	resumePage := "—"
-	if s.ResumeFromPage > 0 {
-		resumePage = fmt.Sprintf("%d/∞", s.ResumeFromPage)
-	}
-
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		styles.StatValue.Render(s.SiteID),
 		statusStyle.Render(status),
 		styles.StatLabel.Render(fmt.Sprintf("Last: %s", lastRun)),
-		styles.StatLabel.Render(fmt.Sprintf("Page: %s", resumePage)),
 		styles.StatLabel.Render(fmt.Sprintf("Props: %d", s.TotalProperties)),
+		styles.StatLabel.Render(fmt.Sprintf("Listings: %d", s.TotalListings)),
 		styles.StatLabel.Render(fmt.Sprintf("Rate: %.0f%%", s.SuccessRate*100)),
 	)
 	return styles.SiteCardBorder.Width(24).Render(content)
