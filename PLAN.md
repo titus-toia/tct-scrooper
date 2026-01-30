@@ -172,6 +172,7 @@ Core tables:
 
 - **Logging**: write to `scrape_logs` plus stdout/stderr (systemd captures).
 - **Run metrics**: `scrape_runs` for counts, error rates, and durations.
+- **Run source**: store runner type in `scrape_runs.source` (e.g., `browser`, `apify:<actor>`), and attach the Apify run ID in `metadata`.
 - **Queue depth**: count `media` rows by `status` to monitor backlog.
 
 ## Config (.env additions)
