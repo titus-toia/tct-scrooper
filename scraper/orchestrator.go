@@ -10,6 +10,7 @@ import (
 	"tct_scrooper/config"
 	"tct_scrooper/identity"
 	"tct_scrooper/models"
+	"tct_scrooper/services"
 	"tct_scrooper/storage"
 )
 
@@ -19,6 +20,13 @@ type Orchestrator struct {
 	supabase *storage.SupabaseStore
 	handlers map[string]Handler
 	paused   bool
+
+	// New services (direct Postgres)
+	pgStore            *storage.PostgresStore
+	listingService     *services.ListingService
+	matchService       *services.MatchService
+	mediaService       *services.MediaService
+	healthcheckService *services.HealthcheckService
 }
 
 func NewOrchestrator(cfg *config.Config, store *storage.SQLiteStore, supabase *storage.SupabaseStore) *Orchestrator {
@@ -42,6 +50,21 @@ func NewOrchestrator(cfg *config.Config, store *storage.SQLiteStore, supabase *s
 	}
 }
 
+// SetServices injects the new Postgres-based services
+func (o *Orchestrator) SetServices(
+	pgStore *storage.PostgresStore,
+	listing *services.ListingService,
+	match *services.MatchService,
+	media *services.MediaService,
+	healthcheck *services.HealthcheckService,
+) {
+	o.pgStore = pgStore
+	o.listingService = listing
+	o.matchService = match
+	o.mediaService = media
+	o.healthcheckService = healthcheck
+}
+
 func (o *Orchestrator) RunAll(ctx context.Context) error {
 	if o.paused {
 		log.Println("Scraper is paused, skipping run")
@@ -54,8 +77,11 @@ func (o *Orchestrator) RunAll(ctx context.Context) error {
 		}
 	}
 
-	if err := o.SyncToSupabase(ctx); err != nil {
-		log.Printf("Error syncing to Supabase: %v", err)
+	// Legacy sync (if configured) - can be removed after full migration
+	if o.supabase != nil && o.pgStore == nil {
+		if err := o.SyncToSupabase(ctx); err != nil {
+			log.Printf("Error syncing to Supabase: %v", err)
+		}
 	}
 
 	return nil
@@ -72,6 +98,7 @@ func (o *Orchestrator) RunSite(ctx context.Context, siteID string) error {
 		return fmt.Errorf("no handler for site: %s", siteID)
 	}
 
+	// Create run record (SQLite for TUI compatibility)
 	run := &models.ScrapeRun{
 		SiteID:    siteID,
 		StartedAt: time.Now(),
@@ -84,13 +111,49 @@ func (o *Orchestrator) RunSite(ctx context.Context, siteID string) error {
 	}
 	run.ID = runID
 
+	// Also create run in Postgres if available
+	var pgRunID *int64
+	if o.pgStore != nil {
+		pgRun := &models.DomainScrapeRun{
+			Source:    siteID,
+			StartedAt: time.Now(),
+			Status:    "running",
+		}
+		if err := o.pgStore.CreateScrapeRun(ctx, pgRun); err != nil {
+			log.Printf("Warning: failed to create Postgres run: %v", err)
+		} else {
+			pgRunID = &pgRun.ID
+		}
+	}
+
 	o.log(run.ID, models.LogLevelInfo, fmt.Sprintf("Starting scrape for %s", siteCfg.Name), siteID)
+
+	// Track stats for new services
+	stats := &services.ProcessStats{}
 
 	defer func() {
 		now := time.Now()
 		run.FinishedAt = &now
 		o.store.UpdateRun(run)
 		o.store.UpdateSiteStats(siteID)
+
+		// Update Postgres run
+		if pgRunID != nil {
+			pgRun := &models.DomainScrapeRun{
+				ID:            *pgRunID,
+				FinishedAt:    &now,
+				Status:        "completed",
+				ListingsFound: stats.ListingsProcessed,
+				ListingsNew:   stats.ListingsNew,
+				PropertiesNew: stats.PropertiesNew,
+				ErrorsCount:   stats.Errors,
+				Metadata:      stats.ToJSON(),
+			}
+			if run.Status == models.RunStatusFailed {
+				pgRun.Status = "failed"
+			}
+			o.pgStore.UpdateScrapeRun(ctx, pgRun)
+		}
 	}()
 
 	for regionID, region := range siteCfg.Regions {
@@ -108,22 +171,50 @@ func (o *Orchestrator) RunSite(ctx context.Context, siteID string) error {
 		o.log(run.ID, models.LogLevelInfo, fmt.Sprintf("Region %s: %d listings", regionID, len(listings)), siteID)
 
 		for _, listing := range listings {
-			if err := o.processListing(ctx, run, &listing, siteID); err != nil {
+			if err := o.processListing(ctx, run, &listing, siteID, pgRunID, stats); err != nil {
 				o.log(run.ID, models.LogLevelError, fmt.Sprintf("Process error for %s: %v", listing.MLS, err), siteID)
 				run.ErrorsCount++
+				stats.Errors++
 			}
 		}
 	}
 
 	run.Status = models.RunStatusCompleted
 	o.log(run.ID, models.LogLevelInfo,
-		fmt.Sprintf("Completed: %d found, %d new properties, %d relisted",
-			run.ListingsFound, run.PropertiesNew, run.PropertiesRelisted), siteID)
+		fmt.Sprintf("Completed: %d found, %d new properties, %d relisted, %d price changes",
+			run.ListingsFound, stats.PropertiesNew, stats.Relisted, stats.PriceChanges), siteID)
 
 	return nil
 }
 
-func (o *Orchestrator) processListing(ctx context.Context, run *models.ScrapeRun, listing *models.RawListing, siteID string) error {
+func (o *Orchestrator) processListing(ctx context.Context, run *models.ScrapeRun, listing *models.RawListing, siteID string, pgRunID *int64, stats *services.ProcessStats) error {
+	// Use new ListingService if available (direct Postgres writes)
+	if o.listingService != nil {
+		result, err := o.listingService.ProcessListing(ctx, listing, siteID, pgRunID)
+		if err != nil {
+			return err
+		}
+		stats.Aggregate(result)
+
+		// Update SQLite stats for backwards compatibility
+		if result.IsNewProperty {
+			run.PropertiesNew++
+		}
+		if result.IsRelisted {
+			run.PropertiesRelisted++
+		}
+		if result.IsNewListing {
+			run.ListingsNew++
+		}
+		return nil
+	}
+
+	// Legacy path: SQLite + Supabase sync
+	return o.processListingLegacy(ctx, run, listing, siteID)
+}
+
+// processListingLegacy is the old SQLite-based processing (for backwards compatibility)
+func (o *Orchestrator) processListingLegacy(ctx context.Context, run *models.ScrapeRun, listing *models.RawListing, siteID string) error {
 	fingerprint := identity.Fingerprint(listing)
 	now := time.Now()
 

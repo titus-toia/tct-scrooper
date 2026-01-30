@@ -7,18 +7,19 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"tct_scrooper/config"
 	"tct_scrooper/httputil"
 	"tct_scrooper/logging"
 	"tct_scrooper/scheduler"
 	"tct_scrooper/scraper"
+	"tct_scrooper/services"
 	"tct_scrooper/storage"
+	"tct_scrooper/workers"
 )
 
 var (
-	resync    = flag.Bool("resync", false, "Mark all properties unsynced and push to Supabase")
-	syncOnly  = flag.Bool("sync", false, "Run sync to Supabase and exit")
 	scrapeNow = flag.Bool("scrape", false, "Run scrape once and exit")
 )
 
@@ -48,50 +49,44 @@ func main() {
 	clients := httputil.NewClients(&cfg.Proxy)
 	log.Printf("Proxy: %s", cfg.Proxy.URL)
 
-	store, err := storage.NewSQLiteStore(cfg.DBPath)
+	ctx := context.Background()
+
+	// Initialize Postgres store (required for domain data)
+	pgStore, err := storage.NewPostgresStore(ctx, cfg.Supabase.DBURL)
+	if err != nil {
+		log.Fatalf("Failed to connect to Postgres: %v", err)
+	}
+	defer pgStore.Close()
+	log.Printf("Connected to Postgres: %s", maskConnectionString(cfg.Supabase.DBURL))
+
+	// Initialize services
+	matchService := services.NewMatchService(pgStore)
+	mediaService := services.NewMediaService(pgStore)
+	listingService := services.NewListingService(pgStore, matchService, mediaService)
+	healthcheckService := services.NewHealthcheckService(pgStore, listingService)
+
+	log.Println("Services initialized")
+
+	// Initialize SQLite for operational data (TUI commands, legacy support)
+	sqliteStore, err := storage.NewSQLiteStore(cfg.DBPath)
 	if err != nil {
 		log.Fatalf("Failed to open SQLite: %v", err)
 	}
-	defer store.Close()
+	defer sqliteStore.Close()
 	log.Printf("SQLite database: %s", cfg.DBPath)
 
+	// Legacy Supabase REST client (for backwards compatibility during transition)
 	var supabase *storage.SupabaseStore
 	if cfg.Supabase.URL != "" && cfg.Supabase.ServiceKey != "" {
 		supabase = storage.NewSupabaseStore(&cfg.Supabase)
-		log.Println("Supabase sync enabled")
-	} else {
-		log.Println("Supabase sync disabled (no credentials)")
+		log.Println("Legacy Supabase REST sync enabled")
 	}
 
-	orchestrator := scraper.NewOrchestrator(cfg, store, supabase)
-	ctx := context.Background()
+	// Create orchestrator with new services
+	orchestrator := scraper.NewOrchestrator(cfg, sqliteStore, supabase)
+	orchestrator.SetServices(pgStore, listingService, matchService, mediaService, healthcheckService)
 
 	// Handle one-shot commands
-	if *resync {
-		log.Println("Marking all properties as unsynced...")
-		count, err := store.MarkAllUnsynced()
-		if err != nil {
-			log.Fatalf("Failed to mark unsynced: %v", err)
-		}
-		log.Printf("Marked %d properties as unsynced", count)
-
-		log.Println("Syncing to Supabase...")
-		if err := orchestrator.SyncToSupabase(ctx); err != nil {
-			log.Fatalf("Sync failed: %v", err)
-		}
-		log.Println("Resync complete!")
-		return
-	}
-
-	if *syncOnly {
-		log.Println("Running sync to Supabase...")
-		if err := orchestrator.SyncToSupabase(ctx); err != nil {
-			log.Fatalf("Sync failed: %v", err)
-		}
-		log.Println("Sync complete!")
-		return
-	}
-
 	if *scrapeNow {
 		log.Println("Running scrape...")
 		if err := orchestrator.RunAll(ctx); err != nil {
@@ -102,13 +97,28 @@ func main() {
 	}
 
 	// Daemon mode
-	sched := scheduler.New(cfg, orchestrator, store, clients)
+	sched := scheduler.New(cfg, orchestrator, sqliteStore, clients)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	if err := sched.Start(ctx); err != nil {
 		log.Fatalf("Failed to start scheduler: %v", err)
 	}
+
+	// Start background workers
+	enrichmentWorker := workers.NewEnrichmentWorker(pgStore, mediaService, cfg.Proxy.URL)
+	go enrichmentWorker.Run(ctx, 10, 5*time.Minute) // batch of 10 every 5 min
+	log.Println("Enrichment worker started")
+
+	healthcheckWorker := workers.NewHealthcheckWorker(pgStore, cfg.Proxy.URL)
+	go healthcheckWorker.Run(ctx, 24*time.Hour, 20, 30*time.Minute) // check listings older than 24h, batch 20, every 30 min
+	log.Println("Healthcheck worker started")
+
+	// Media worker (with NoOp uploader for now - replace with real S3 uploader when configured)
+	mediaUploader := workers.NewNoOpUploader() // TODO: replace with real S3Uploader
+	mediaWorker := workers.NewMediaWorker(pgStore, mediaUploader, cfg.Proxy.URL)
+	go mediaWorker.Run(ctx, 20, 2*time.Minute) // batch of 20 every 2 min
+	log.Println("Media worker started")
 
 	log.Println("Daemon running. Press Ctrl+C to stop.")
 
@@ -119,4 +129,37 @@ func main() {
 	log.Println("Shutting down...")
 	sched.Stop()
 	log.Println("Goodbye!")
+}
+
+// maskConnectionString masks password in connection string for logging
+func maskConnectionString(connStr string) string {
+	// Simple mask - find :// and mask until @
+	start := 0
+	for i := 0; i < len(connStr)-3; i++ {
+		if connStr[i:i+3] == "://" {
+			start = i + 3
+			break
+		}
+	}
+	if start == 0 {
+		return connStr
+	}
+
+	// Find : after user
+	colonIdx := -1
+	atIdx := -1
+	for i := start; i < len(connStr); i++ {
+		if connStr[i] == ':' && colonIdx == -1 {
+			colonIdx = i
+		}
+		if connStr[i] == '@' {
+			atIdx = i
+			break
+		}
+	}
+
+	if colonIdx > 0 && atIdx > colonIdx {
+		return connStr[:colonIdx+1] + "****" + connStr[atIdx:]
+	}
+	return connStr
 }

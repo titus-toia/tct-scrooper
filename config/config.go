@@ -120,7 +120,12 @@ func (c *Config) validate() error {
 		missing = append(missing, "PROXY_URL")
 	}
 
-	// Supabase: if URL set, service key required
+	// Supabase DB URL is required for domain data (Postgres)
+	if c.Supabase.DBURL == "" {
+		missing = append(missing, "SUPABASE_DB_URL (required for Postgres)")
+	}
+
+	// Legacy REST API: if URL set, service key required
 	if c.Supabase.URL != "" && c.Supabase.ServiceKey == "" {
 		missing = append(missing, "SUPABASE_SERVICE_KEY (required when SUPABASE_URL is set)")
 	}
@@ -139,6 +144,11 @@ func (c *Config) validate() error {
 	}
 
 	return nil
+}
+
+// HasPostgres returns true if Postgres connection is configured
+func (c *Config) HasPostgres() bool {
+	return c.Supabase.DBURL != ""
 }
 
 func joinStrings(strs []string, sep string) string {

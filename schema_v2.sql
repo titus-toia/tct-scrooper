@@ -87,7 +87,7 @@ CREATE TABLE media (
 	media_type TEXT DEFAULT 'image',
 	mime_type TEXT,
 	file_size_bytes BIGINT,
-	original_url TEXT,
+	original_url TEXT UNIQUE NOT NULL,
 	height INTEGER,
 	width INTEGER,
 	pages INTEGER,
