@@ -81,7 +81,7 @@ CREATE TABLE listings (
 
 CREATE TABLE media (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-	s3_key TEXT UNIQUE NOT NULL,
+	s3_key TEXT UNIQUE,
 	content_hash TEXT,
 	-- media_type: image, video, document
 	media_type TEXT DEFAULT 'image',
@@ -92,6 +92,10 @@ CREATE TABLE media (
 	width INTEGER,
 	pages INTEGER,
 	duration INTEGER,
+	-- status: pending, processing, uploaded, failed
+	status TEXT DEFAULT 'pending',
+	-- attempts: number of media worker tries
+	attempts INTEGER DEFAULT 0,
 	metadata JSONB,
 	created_at TIMESTAMPTZ DEFAULT NOW()
 );

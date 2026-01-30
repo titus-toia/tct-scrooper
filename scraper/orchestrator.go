@@ -160,6 +160,11 @@ func (o *Orchestrator) processListing(ctx context.Context, run *models.ScrapeRun
 		if err := o.store.UpsertProperty(prop); err != nil {
 			return err
 		}
+		if matches, err := o.store.InsertPotentialMatches(prop); err != nil {
+			o.log(run.ID, models.LogLevelWarn, fmt.Sprintf("Property match insert failed for %s: %v", prop.ID, err), siteID)
+		} else if matches > 0 {
+			o.log(run.ID, models.LogLevelInfo, fmt.Sprintf("Property match candidates for %s: %d", prop.ID, matches), siteID)
+		}
 		run.PropertiesNew++
 	} else {
 		lastSnap, err := o.store.GetLastSnapshotForProperty(fingerprint)

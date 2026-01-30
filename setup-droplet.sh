@@ -38,6 +38,7 @@ apt-get install -y \
 	build-essential \
 	git \
 	sqlite3 \
+	postgresql-client \
 	python3 \
 	python3-pip \
 	python3-venv \

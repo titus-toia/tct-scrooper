@@ -171,3 +171,12 @@ Once ExpressVPN is running:
 2. Build the TUI admin interface (Textual/Python)
 3. Set up Supabase for data storage
 4. Configure cron/systemd for scheduled jobs
+
+## Optional: PostgreSQL Client
+
+If you plan to run `psql` for manual migrations or debugging:
+
+```bash
+apt-get update
+apt-get install -y postgresql-client
+```

@@ -1,0 +1,51 @@
+{
+  "Results": [
+    {
+      "Id": "29279012",
+      "MlsNumber": "26001716",
+      "PublicRemarks": "Full property description text...",
+      "PostalCode": "N8P0E6",
+      "RelativeURLEn": "/real-estate/29279012/939-chateau-windsor",
+      "Property": {
+        "Price": "$1,149,900",
+        "Type": "Single Family",
+        "Address": { "AddressText": "939 Chateau|Windsor, Ontario N8P0E6" },
+        "Photo": [
+          { "HighResPath": "https://cdn.realtor.ca/listings/26001716_1.jpg", "LowResPath": "" },
+          { "HighResPath": "", "LowResPath": "https://cdn.realtor.ca/listings/26001716_2.jpg" }
+        ]
+      },
+      "Building": {
+        "Bedrooms": "3 + 1",
+        "BathroomTotal": "3",
+        "SizeInterior": "2360 sqft"
+      },
+      "Individual": [
+        {
+          "IndividualID": 1631864,
+          "Name": "FRAN GREBENC",
+          "Photo": "https://cdn.realtor.ca/individual/1163226.jpg",
+          "Phones": [
+            { "PhoneType": "Telephone", "PhoneNumber": "735-7222", "AreaCode": "519" }
+          ],
+          "Organization": {
+            "OrganizationID": 187768,
+            "Name": "ROYAL LEPAGE BINDER REAL ESTATE",
+            "Address": { "AddressText": "13158 TECUMSEH ROAD EAST|TECUMSEH, Ontario N8N3T6" },
+            "Phones": [
+              { "PhoneType": "Telephone", "PhoneNumber": "735-7222", "AreaCode": "519" }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "Paging": {
+    "RecordsPerPage": 12,
+    "CurrentPage": 1,
+    "TotalRecords": 1,
+    "MaxRecords": 1,
+    "TotalPages": 1,
+    "RecordsShowing": 1
+  }
+}

@@ -29,6 +29,7 @@ type SupabaseConfig struct {
 	URL        string
 	AnonKey    string
 	ServiceKey string
+	DBURL      string
 }
 
 type SchedulerConfig struct {
@@ -73,6 +74,7 @@ func Load() (*Config, error) {
 			URL:        os.Getenv("SUPABASE_URL"),
 			AnonKey:    os.Getenv("SUPABASE_ANON_KEY"),
 			ServiceKey: os.Getenv("SUPABASE_SERVICE_KEY"),
+			DBURL:      os.Getenv("SUPABASE_DB_URL"),
 		},
 		Scheduler: SchedulerConfig{
 			Cron: os.Getenv("SCRAPE_CRON"),

@@ -1,0 +1,31 @@
+{
+  "Results": [
+    {
+      "Id": 555,
+      "MlsNumber": "X1234567",
+      "PublicRemarks": "",
+      "PostalCode": "",
+      "RelativeURLEn": "/real-estate/555/123-main-st",
+      "Property": {
+        "Price": "$499,000",
+        "Type": "Condo",
+        "Address": { "AddressText": "123 Main St|Toronto, Ontario" },
+        "Photo": []
+      },
+      "Building": {
+        "Bedrooms": 2,
+        "BathroomTotal": 1,
+        "SizeInterior": "900 sqft"
+      },
+      "Individual": []
+    }
+  ],
+  "Paging": {
+    "RecordsPerPage": 12,
+    "CurrentPage": 1,
+    "TotalRecords": 1,
+    "MaxRecords": 1,
+    "TotalPages": 1,
+    "RecordsShowing": 1
+  }
+}

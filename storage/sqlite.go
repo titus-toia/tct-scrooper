@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -87,6 +88,18 @@ func (s *SQLiteStore) migrate() error {
 		site_id TEXT
 	);
 
+	CREATE TABLE IF NOT EXISTS property_matches (
+		id INTEGER PRIMARY KEY,
+		matched_id TEXT NOT NULL,
+		incoming_id TEXT NOT NULL,
+		confidence REAL,
+		match_reasons JSON,
+		status TEXT DEFAULT 'pending',
+		reviewed_at DATETIME,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		UNIQUE(matched_id, incoming_id)
+	);
+
 	CREATE TABLE IF NOT EXISTS site_stats (
 		site_id TEXT PRIMARY KEY,
 		last_run_at DATETIME,
@@ -113,6 +126,9 @@ func (s *SQLiteStore) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_commands_pending ON commands(processed_at) WHERE processed_at IS NULL;
 	CREATE INDEX IF NOT EXISTS idx_logs_run ON scrape_logs(run_id, timestamp);
 	CREATE INDEX IF NOT EXISTS idx_runs_status ON scrape_runs(status, started_at);
+	CREATE INDEX IF NOT EXISTS idx_matches_status ON property_matches(status);
+	CREATE INDEX IF NOT EXISTS idx_matches_matched ON property_matches(matched_id);
+	CREATE INDEX IF NOT EXISTS idx_matches_incoming ON property_matches(incoming_id);
 	`
 	_, err := s.db.Exec(schema)
 	return err
@@ -471,4 +487,244 @@ func (s *SQLiteStore) GetLastRunTime(siteID string) (time.Time, error) {
 		return time.Time{}, nil
 	}
 	return lastRun, err
+}
+
+type propertyMatchCandidate struct {
+	ID                string
+	NormalizedAddress string
+	City              string
+	PostalCode        string
+	Beds              int
+	Baths             int
+	SqFt              int
+	PropertyType      string
+}
+
+func (s *SQLiteStore) InsertPotentialMatches(incoming *models.Property) (int, error) {
+	if incoming == nil {
+		return 0, nil
+	}
+
+	normalized := strings.TrimSpace(incoming.NormalizedAddress)
+	if normalized == "" {
+		return 0, nil
+	}
+
+	prefix := addressPrefix(normalized, 2)
+	if incoming.PostalCode == "" && prefix == "" {
+		return 0, nil
+	}
+
+	query := `
+		SELECT id, normalized_address, city, postal_code, beds, baths, sqft, property_type
+		FROM properties
+		WHERE id != ?`
+	args := []interface{}{incoming.ID}
+
+	if incoming.City != "" {
+		query += " AND city = ?"
+		args = append(args, incoming.City)
+	}
+	if incoming.PostalCode != "" {
+		query += " AND postal_code = ?"
+		args = append(args, incoming.PostalCode)
+	}
+	if prefix != "" {
+		query += " AND normalized_address LIKE ?"
+		args = append(args, prefix+"%")
+	}
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	baseIncoming := baseAddress(normalized)
+	inserted := 0
+
+	for rows.Next() {
+		var candidate propertyMatchCandidate
+		var postalCode sql.NullString
+		if err := rows.Scan(&candidate.ID, &candidate.NormalizedAddress, &candidate.City, &postalCode,
+			&candidate.Beds, &candidate.Baths, &candidate.SqFt, &candidate.PropertyType); err != nil {
+			return inserted, err
+		}
+		candidate.PostalCode = postalCode.String
+
+		confidence, reasons, ok := scorePotentialMatch(incoming, &candidate, baseIncoming)
+		if !ok {
+			continue
+		}
+
+		reasonsJSON, _ := json.Marshal(reasons)
+		result, err := s.db.Exec(`
+			INSERT OR IGNORE INTO property_matches (matched_id, incoming_id, confidence, match_reasons, status)
+			VALUES (?, ?, ?, ?, 'pending')`,
+			candidate.ID, incoming.ID, confidence, reasonsJSON)
+		if err != nil {
+			return inserted, err
+		}
+
+		if rowsAffected, _ := result.RowsAffected(); rowsAffected > 0 {
+			inserted++
+		}
+	}
+
+	return inserted, rows.Err()
+}
+
+func scorePotentialMatch(incoming *models.Property, candidate *propertyMatchCandidate, baseIncoming string) (float64, []string, bool) {
+	reasons := []string{}
+	strongAddress := false
+	sameAddress := false
+
+	if incoming.NormalizedAddress != "" && candidate.NormalizedAddress != "" &&
+		incoming.NormalizedAddress == candidate.NormalizedAddress {
+		reasons = append(reasons, "same_address")
+		strongAddress = true
+		sameAddress = true
+	} else if baseIncoming != "" {
+		baseCandidate := baseAddress(candidate.NormalizedAddress)
+		if baseCandidate != "" && baseCandidate == baseIncoming {
+			reasons = append(reasons, "same_base_address")
+			strongAddress = true
+		}
+	}
+
+	samePostal := incoming.PostalCode != "" && candidate.PostalCode != "" &&
+		incoming.PostalCode == candidate.PostalCode
+	if samePostal {
+		reasons = append(reasons, "same_postal")
+	}
+
+	sameType := incoming.PropertyType != "" && candidate.PropertyType != "" &&
+		strings.EqualFold(incoming.PropertyType, candidate.PropertyType)
+	if sameType {
+		reasons = append(reasons, "same_property_type")
+	}
+
+	closeAttrCount := 0
+	if incoming.Beds > 0 && candidate.Beds > 0 {
+		diff := absInt(incoming.Beds - candidate.Beds)
+		if diff == 0 {
+			reasons = append(reasons, "same_beds")
+			closeAttrCount++
+		} else if diff == 1 {
+			reasons = append(reasons, "close_beds")
+			closeAttrCount++
+		}
+	}
+	if incoming.Baths > 0 && candidate.Baths > 0 {
+		diff := absInt(incoming.Baths - candidate.Baths)
+		if diff == 0 {
+			reasons = append(reasons, "same_baths")
+			closeAttrCount++
+		} else if diff == 1 {
+			reasons = append(reasons, "close_baths")
+			closeAttrCount++
+		}
+	}
+	if closeSqFt(incoming.SqFt, candidate.SqFt) {
+		reasons = append(reasons, "close_sqft")
+		closeAttrCount++
+	}
+
+	if !strongAddress {
+		if !(samePostal && sameType && closeAttrCount >= 2) {
+			return 0, nil, false
+		}
+		confidence := 0.55 + 0.05*float64(closeAttrCount)
+		if confidence > 0.85 {
+			confidence = 0.85
+		}
+		return confidence, reasons, true
+	}
+
+	confidence := 0.75
+	if sameAddress {
+		confidence = 0.9
+	}
+	confidence += 0.03 * float64(closeAttrCount)
+	if samePostal {
+		confidence += 0.03
+	}
+	if sameType {
+		confidence += 0.03
+	}
+	if confidence > 0.95 {
+		confidence = 0.95
+	}
+
+	return confidence, reasons, true
+}
+
+func addressPrefix(normalized string, minTokens int) string {
+	parts := strings.Fields(normalized)
+	if len(parts) < minTokens {
+		return ""
+	}
+	return strings.Join(parts[:minTokens], " ")
+}
+
+func baseAddress(normalized string) string {
+	parts := strings.Fields(normalized)
+	if len(parts) == 0 {
+		return ""
+	}
+
+	unitTokens := map[string]bool{
+		"apt":  true,
+		"unit": true,
+		"ste":  true,
+		"fl":   true,
+		"bldg": true,
+	}
+
+	for i, part := range parts {
+		if unitTokens[part] {
+			parts = parts[:i]
+			break
+		}
+	}
+
+	if len(parts) >= 4 && isNumericToken(parts[len(parts)-1]) {
+		parts = parts[:len(parts)-1]
+	}
+
+	return strings.Join(parts, " ")
+}
+
+func isNumericToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func closeSqFt(a, b int) bool {
+	if a <= 0 || b <= 0 {
+		return false
+	}
+	diff := absInt(a - b)
+	if diff <= 200 {
+		return true
+	}
+	maxVal := a
+	if b > maxVal {
+		maxVal = b
+	}
+	return float64(diff) <= 0.1*float64(maxVal)
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
