@@ -18,9 +18,11 @@ import (
 type dashboardDataMsg struct {
 	stats         []db.SiteStats
 	runs          []db.ScrapeRun
+	cityStats     []db.CityStats
 	propCount     int
 	listingCount  int
 	activeCount   int
+	mediaQueue    int
 }
 
 type logTailMsg struct {
@@ -34,9 +36,11 @@ type Dashboard struct {
 	width, height int
 	stats         []db.SiteStats
 	runs          []db.ScrapeRun
+	cityStats     []db.CityStats
 	propCount     int
 	listingCount  int
 	activeCount   int
+	mediaQueue    int
 	logLines      []string
 	logPath       string
 	logScroll     int       // scroll offset (0 = bottom/newest)
@@ -66,10 +70,12 @@ func (d Dashboard) Refresh() tea.Cmd {
 	return func() tea.Msg {
 		stats, _ := d.db.GetSiteStats()
 		runs, _ := d.db.GetRecentRuns(10)
+		cityStats, _ := d.db.GetCityStats()
 		propCount, _ := d.db.GetPropertyCount()
 		listingCount, _ := d.db.GetListingCount()
 		activeCount, _ := d.db.GetActiveListingCount()
-		return dashboardDataMsg{stats, runs, propCount, listingCount, activeCount}
+		mediaQueue, _ := d.db.GetPendingMediaCount()
+		return dashboardDataMsg{stats, runs, cityStats, propCount, listingCount, activeCount, mediaQueue}
 	}
 }
 
@@ -129,9 +135,11 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case dashboardDataMsg:
 		d.stats = msg.stats
 		d.runs = msg.runs
+		d.cityStats = msg.cityStats
 		d.propCount = msg.propCount
 		d.listingCount = msg.listingCount
 		d.activeCount = msg.activeCount
+		d.mediaQueue = msg.mediaQueue
 		return d, d.tailLog()
 	case logTailMsg:
 		d.logLines = msg.lines
@@ -178,6 +186,7 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (d Dashboard) View() string {
 	statCards := d.renderStatCards()
 	siteCards := d.renderSiteCards()
+	cityCards := d.renderCityCards()
 	runsTable := d.renderRunsTable()
 	logTail := d.renderLogTail()
 
@@ -186,6 +195,8 @@ func (d Dashboard) View() string {
 		statCards,
 		"",
 		siteCards,
+		"",
+		cityCards,
 		"",
 		styles.Title.Render("Recent Runs"),
 		runsTable,
@@ -275,6 +286,7 @@ func (d Dashboard) renderStatCards() string {
 		d.renderStatCard("Properties", fmt.Sprintf("%d", d.propCount)),
 		d.renderStatCard("Listings", fmt.Sprintf("%d", d.listingCount)),
 		d.renderStatCard("Active", fmt.Sprintf("%d", d.activeCount)),
+		d.renderStatCard("Media Q", fmt.Sprintf("%d", d.mediaQueue)),
 		d.renderStatCard("Sites", fmt.Sprintf("%d", len(d.stats))),
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, cards...)
@@ -298,6 +310,35 @@ func (d Dashboard) renderSiteCards() string {
 		cards = append(cards, d.renderSiteCard(s))
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, cards...)
+}
+
+func (d Dashboard) renderCityCards() string {
+	if len(d.cityStats) == 0 {
+		return ""
+	}
+
+	var cards []string
+	for _, c := range d.cityStats {
+		cards = append(cards, d.renderCityCard(c))
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, cards...)
+}
+
+func (d Dashboard) renderCityCard(c db.CityStats) string {
+	avgPrice := ""
+	if c.AvgPrice > 0 {
+		avgPrice = fmt.Sprintf("$%dk", c.AvgPrice/1000)
+	} else {
+		avgPrice = "-"
+	}
+
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		styles.StatValue.Render(fmt.Sprintf("%s, %s", c.City, c.Province)),
+		styles.StatLabel.Render(fmt.Sprintf("Props: %d", c.PropertyCount)),
+		styles.StatLabel.Render(fmt.Sprintf("Active: %d", c.ActiveCount)),
+		styles.StatLabel.Render(fmt.Sprintf("Avg: %s", avgPrice)),
+	)
+	return styles.CityCardBorder.Width(20).Render(content)
 }
 
 func (d Dashboard) renderSiteCard(s db.SiteStats) string {

@@ -62,6 +62,7 @@ type MediaProcessResult struct {
 	S3Key       string
 	ContentHash string
 	Size        int64
+	IsDuplicate bool // true if content already exists in S3 (different URL, same image)
 	Error       error
 }
 
@@ -108,6 +109,19 @@ func (w *MediaWorker) Process(ctx context.Context, media *models.Media) MediaPro
 	// Generate S3 key based on category
 	ext := guessExtension(media.OriginalURL, resp.Header.Get("Content-Type"))
 	result.S3Key = generateS3Key(media, result.ContentHash, ext)
+
+	// Check if this s3_key already exists (same content from different URL)
+	existingID, err := w.store.GetMediaByS3Key(ctx, result.S3Key)
+	if err != nil {
+		result.Error = fmt.Errorf("check existing: %w", err)
+		return result
+	}
+	if existingID != uuid.Nil {
+		// Content already in S3 from another URL, skip upload
+		log.Printf("Media worker: %s already exists (same content as %s), skipping upload", result.S3Key, existingID)
+		result.IsDuplicate = true
+		return result
+	}
 
 	// Upload to S3
 	if w.uploader != nil {
@@ -260,13 +274,21 @@ func (w *MediaWorker) processBatch(ctx context.Context, batchSize int) {
 			log.Printf("Media worker: failed %s: %v", m.OriginalURL, result.Error)
 			failed++
 
-			// Increment attempts, mark as failed if too many
 			newAttempts := m.Attempts + 1
 			status := models.MediaStatusPending
 			if newAttempts >= 3 {
 				status = models.MediaStatusFailed
 			}
 			w.store.UpdateMediaStatus(ctx, m.ID, status, nil, "", newAttempts)
+			continue
+		}
+
+		if result.IsDuplicate {
+			// Content already in S3 from another URL - mark as duplicate (no s3_key to avoid unique constraint)
+			if err := w.store.UpdateMediaStatus(ctx, m.ID, "duplicate", nil, result.ContentHash, m.Attempts); err != nil {
+				log.Printf("Media worker: failed to mark duplicate %s: %v", m.ID, err)
+			}
+			processed++
 			continue
 		}
 

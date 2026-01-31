@@ -28,6 +28,7 @@ type ApifyHandler struct {
 	apiKey  string
 	adapter ApifyActorAdapter
 	store   *storage.SQLiteStore
+	pgStore *storage.PostgresStore
 }
 
 func NewApifyHandler(cfg *config.SiteConfig) *ApifyHandler {
@@ -58,13 +59,17 @@ func (h *ApifyHandler) SetStore(store *storage.SQLiteStore) {
 	h.store = store
 }
 
+func (h *ApifyHandler) SetPgStore(store *storage.PostgresStore) {
+	h.pgStore = store
+}
+
 func (h *ApifyHandler) Scrape(ctx context.Context, region config.Region) ([]models.RawListing, error) {
 	if h.apiKey == "" {
 		return nil, fmt.Errorf("APIFY_API_KEY not set")
 	}
 
 	isIncremental := h.hasExistingData()
-	daysBack := h.calculateDaysBack()
+	daysBack := h.calculateDaysBack(region)
 
 	// Set days on canadesk adapter if applicable
 	if cdk, ok := h.adapter.(*CanadeskAdapter); ok {
@@ -107,10 +112,24 @@ func (h *ApifyHandler) hasExistingData() bool {
 	return count > 0
 }
 
-func (h *ApifyHandler) calculateDaysBack() int {
+func (h *ApifyHandler) calculateDaysBack(region config.Region) int {
 	if h.store == nil {
 		return 30
 	}
+
+	// Check if this region has any listings - if not, do full 30-day scrape
+	if h.pgStore != nil {
+		cityName := extractCityName(region.GeoName)
+		if cityName != "" {
+			count, err := h.pgStore.GetListingCountByCity(context.Background(), cityName)
+			if err == nil && count == 0 {
+				log.Printf("No existing listings for %s, using 30 days", cityName)
+				return 30
+			}
+		}
+	}
+
+	// Region has data, use incremental based on last run
 	lastRun, err := h.store.GetLastRunTime(h.cfg.ID)
 	if err != nil || lastRun.IsZero() {
 		return 30

@@ -1,7 +1,7 @@
 id: realtor_ca
 name: Realtor.ca
 handler: apify
-apify_actor: canadesk
+apify_actor: scrapemind
 apify_max_listings: 600
 rate_limit_ms: 500
 endpoints:
@@ -16,3 +16,19 @@ regions:
     lat_max: 42.45498
     lng_min: -83.38449
     lng_max: -82.68498
+  edmonton-ab:
+    slug: ab/edmonton/real-estate
+    geo_id: g30_c3x29657
+    geo_name: Edmonton, AB
+    lat_min: 53.24597
+    lat_max: 53.80679
+    lng_min: -114.34050
+    lng_max: -112.64448
+  nanaimo-bc:
+    slug: bc/nanaimo/real-estate
+    geo_id: g30_c0xzg2er
+    geo_name: Nanaimo, BC
+    lat_min: 49.02004
+    lat_max: 49.32843
+    lng_min: -124.35898
+    lng_max: -123.51097

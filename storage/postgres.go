@@ -26,6 +26,9 @@ func NewPostgresStore(ctx context.Context, connString string) (*PostgresStore, e
 	config.MaxConnLifetime = 30 * time.Minute
 	config.MaxConnIdleTime = 5 * time.Minute
 
+	// Disable prepared statement cache - required for Supabase PgBouncer (transaction pooling)
+	config.ConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+
 	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("create pool: %w", err)
@@ -448,6 +451,26 @@ func (s *PostgresStore) UpdateMediaStatus(ctx context.Context, id uuid.UUID, sta
 	return err
 }
 
+// GetMediaByS3Key checks if an s3_key is already in use (for deduplication)
+func (s *PostgresStore) GetMediaByS3Key(ctx context.Context, key string) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := s.pool.QueryRow(ctx, `SELECT id FROM media WHERE s3_key = $1`, key).Scan(&id)
+	if err == pgx.ErrNoRows {
+		return uuid.Nil, nil
+	}
+	return id, err
+}
+
+// GetListingCountByCity returns count of listings for a city (for incremental scrape logic)
+func (s *PostgresStore) GetListingCountByCity(ctx context.Context, city string) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM listings l
+		JOIN properties p ON p.id = l.property_id
+		WHERE LOWER(p.city) = LOWER($1)`, city).Scan(&count)
+	return count, err
+}
+
 // =============================================================================
 // Listing Media
 // =============================================================================
@@ -581,7 +604,7 @@ func (s *PostgresStore) InsertPropertyMatch(ctx context.Context, pm *models.Prop
 		RETURNING id`
 
 	err := s.pool.QueryRow(ctx, query,
-		pm.MatchedID, pm.IncomingID, pm.Confidence, pm.MatchReasons, pm.Status, pm.CreatedAt,
+		pm.MatchedID, pm.IncomingID, pm.Confidence, string(pm.MatchReasons), pm.Status, pm.CreatedAt,
 	).Scan(&pm.ID)
 
 	if err == pgx.ErrNoRows {

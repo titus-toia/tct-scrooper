@@ -60,6 +60,13 @@ func (o *Orchestrator) SetServices(
 	o.matchService = match
 	o.mediaService = media
 	o.healthcheckService = healthcheck
+
+	// Pass pgStore to handlers that need it
+	for _, handler := range o.handlers {
+		if ah, ok := handler.(*ApifyHandler); ok {
+			ah.SetPgStore(pgStore)
+		}
+	}
 }
 
 func (o *Orchestrator) RunAll(ctx context.Context) error {

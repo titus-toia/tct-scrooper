@@ -225,8 +225,8 @@ func (s *ListingService) ProcessListing(ctx context.Context, raw *models.RawList
 		}
 	}
 
-	// 5. Create price point
-	if listing.Price != nil && *listing.Price > 0 {
+	// 5. Create price point only on new listing or price change
+	if listing.Price != nil && *listing.Price > 0 && (result.IsNewListing || result.IsRelisted || result.PriceChanged) {
 		priceType := models.PriceTypeAskingSale
 		// TODO: detect rent vs sale from listing data
 

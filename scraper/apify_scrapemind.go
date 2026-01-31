@@ -55,6 +55,7 @@ func (a *ScrapemindAdapter) ParseListing(data json.RawMessage) (models.RawListin
 		MLS:          r.MlsNumber,
 		Address:      r.Property.Address.AddressText,
 		City:         r.Property.Address.City,
+		Province:     normalizeProvince(r.Property.Address.Province),
 		PostalCode:   extractPostalFromAddress(r.Property.Address.AddressText),
 		Price:        parsePrice(r.Property.Price),
 		Beds:         beds,

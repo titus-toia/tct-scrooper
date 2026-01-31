@@ -42,6 +42,11 @@ var (
 			BorderForeground(SecondaryColor).
 			Padding(0, 1)
 
+	CityCardBorder = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#F97316")). // Orange
+			Padding(0, 1)
+
 	StatValue = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(TextColor)

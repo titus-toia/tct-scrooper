@@ -102,6 +102,16 @@ type PricePoint struct {
 	Source      string
 }
 
+type CityStats struct {
+	City           string
+	Province       string
+	PropertyCount  int
+	ListingCount   int
+	ActiveCount    int
+	AvgPrice       int64
+	MedianPrice    int64
+}
+
 func New(postgresURL, sqlitePath string) (*Client, error) {
 	ctx := context.Background()
 
@@ -277,6 +287,44 @@ func (c *Client) GetActiveListingCount() (int, error) {
 	var count int
 	err := c.pg.QueryRow(c.ctx, "SELECT COUNT(*) FROM listings WHERE status = 'active'").Scan(&count)
 	return count, err
+}
+
+func (c *Client) GetPendingMediaCount() (int, error) {
+	var count int
+	err := c.pg.QueryRow(c.ctx, "SELECT COUNT(*) FROM media WHERE s3_key IS NULL").Scan(&count)
+	return count, err
+}
+
+func (c *Client) GetCityStats() ([]CityStats, error) {
+	rows, err := c.pg.Query(c.ctx, `
+		SELECT
+			COALESCE(p.city, 'Unknown') as city,
+			COALESCE(p.province, '') as province,
+			COUNT(DISTINCT p.id)::int as property_count,
+			COUNT(l.id)::int as listing_count,
+			COUNT(l.id) FILTER (WHERE l.status = 'active')::int as active_count,
+			COALESCE(AVG(l.price) FILTER (WHERE l.status = 'active'), 0)::bigint as avg_price
+		FROM properties p
+		LEFT JOIN listings l ON l.property_id = p.id
+		GROUP BY p.city, p.province
+		HAVING COUNT(DISTINCT p.id) > 0
+		ORDER BY COUNT(DISTINCT p.id) DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var stats []CityStats
+	for rows.Next() {
+		var s CityStats
+		err := rows.Scan(&s.City, &s.Province, &s.PropertyCount, &s.ListingCount, &s.ActiveCount, &s.AvgPrice)
+		if err != nil {
+			return nil, err
+		}
+		stats = append(stats, s)
+	}
+	return stats, nil
 }
 
 func (c *Client) GetListingsForProperty(propertyID string) ([]Listing, error) {

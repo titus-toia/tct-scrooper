@@ -6,360 +6,588 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/PuerkitoBio/goquery"
 	"github.com/google/uuid"
+	"github.com/playwright-community/playwright-go"
 	"tct_scrooper/models"
 	"tct_scrooper/services"
 	"tct_scrooper/storage"
 )
 
-// EnrichmentWorker fetches listing pages and extracts detailed property info
 type EnrichmentWorker struct {
-	store        *storage.PostgresStore
-	mediaService *services.MediaService
-	httpClient   *http.Client
-	proxyURL     string
+	store           *storage.PostgresStore
+	mediaService    *services.MediaService
+	proxyURL        string
+	scrapingBeeKey  string
+	httpClient      *http.Client
+
+	mu          sync.Mutex
+	pw          *playwright.Playwright
+	context     playwright.BrowserContext
+	initialized bool
 }
 
-// NewEnrichmentWorker creates a new enrichment worker
 func NewEnrichmentWorker(store *storage.PostgresStore, mediaService *services.MediaService, proxyURL string) *EnrichmentWorker {
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-
-	if proxyURL != "" {
-		if proxyParsed, err := url.Parse(proxyURL); err == nil {
-			transport.Proxy = http.ProxyURL(proxyParsed)
-			log.Printf("Enrichment worker using proxy: %s", proxyParsed.Host)
-		}
-	}
-
-	client := &http.Client{
-		Timeout:   30 * time.Second,
-		Transport: transport,
+	scrapingBeeKey := os.Getenv("SCRAPINGBEE_API_KEY")
+	if scrapingBeeKey != "" {
+		log.Printf("Enrichment: ScrapingBee API key loaded (%d chars)", len(scrapingBeeKey))
+	} else {
+		log.Println("Enrichment: No ScrapingBee API key, will use Playwright only")
 	}
 
 	return &EnrichmentWorker{
-		store:        store,
-		mediaService: mediaService,
-		httpClient:   client,
-		proxyURL:     proxyURL,
+		store:          store,
+		mediaService:   mediaService,
+		proxyURL:       proxyURL,
+		scrapingBeeKey: scrapingBeeKey,
+		httpClient: &http.Client{
+			Timeout: 60 * time.Second,
+			Transport: &http.Transport{
+				MaxIdleConns:        100,
+				MaxIdleConnsPerHost: 10,
+				IdleConnTimeout:     90 * time.Second,
+			},
+		},
 	}
 }
 
-// EnrichedData contains all data extracted from the listing page
+func (w *EnrichmentWorker) ensureBrowser() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.initialized {
+		return nil
+	}
+
+	var err error
+	w.pw, err = playwright.Run()
+	if err != nil {
+		return fmt.Errorf("failed to start playwright: %w", err)
+	}
+
+	// Use same browser_data as browser_handler for shared cookies/session
+	cwd, _ := os.Getwd()
+	userDataDir := filepath.Join(cwd, "browser_data")
+
+	launchOpts := playwright.BrowserTypeLaunchPersistentContextOptions{
+		Headless: playwright.Bool(false), // Headed mode to bypass Incapsula (use with xvfb)
+		Args: []string{
+			"--disable-blink-features=AutomationControlled",
+			"--disable-dev-shm-usage",
+			"--no-sandbox",
+			"--disable-gpu",
+		},
+		UserAgent: playwright.String("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
+	}
+
+	if w.proxyURL != "" {
+		proxyParsed, err := parseProxyURL(w.proxyURL)
+		if err != nil {
+			log.Printf("Warning: failed to parse proxy URL: %v", err)
+		} else {
+			launchOpts.Proxy = proxyParsed
+			log.Printf("Enrichment browser using proxy: %s", proxyParsed.Server)
+		}
+	}
+
+	w.context, err = w.pw.Chromium.LaunchPersistentContext(userDataDir, launchOpts)
+	if err != nil {
+		w.pw.Stop()
+		return fmt.Errorf("failed to launch browser: %w", err)
+	}
+
+	w.initialized = true
+	log.Println("Enrichment browser initialized (persistent context)")
+
+	// Warmup to get cookies/session
+	if err := w.warmup(); err != nil {
+		log.Printf("Enrichment warmup failed: %v", err)
+	}
+
+	return nil
+}
+
+func (w *EnrichmentWorker) closeBrowser() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.context != nil {
+		w.context.Close()
+	}
+	if w.pw != nil {
+		w.pw.Stop()
+	}
+	w.initialized = false
+}
+
+func (w *EnrichmentWorker) warmup() error {
+	log.Println("Enrichment: warming up browser session...")
+
+	page, err := w.context.NewPage()
+	if err != nil {
+		return err
+	}
+	defer page.Close()
+
+	// First visit homepage to establish initial cookies
+	log.Println("Enrichment warmup: visiting homepage first")
+	_, err = page.Goto("https://www.realtor.ca/", playwright.PageGotoOptions{
+		Timeout:   playwright.Float(60000),
+		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+	})
+	if err != nil {
+		log.Printf("Enrichment warmup: homepage error: %v", err)
+	}
+
+	page.WaitForTimeout(3000)
+	w.simulateHuman(page)
+
+	// Handle any Incapsula on homepage
+	for i := 0; i < 5; i++ {
+		content, _ := page.Content()
+		if !strings.Contains(content, "Incapsula") {
+			log.Println("Enrichment warmup: homepage loaded")
+			break
+		}
+		log.Println("Enrichment warmup: handling Incapsula on homepage...")
+		w.handleIncapsula(page)
+		page.WaitForTimeout(3000)
+	}
+
+	// Now navigate to search results
+	searchURL := "https://www.realtor.ca/map#view=list&CurrentPage=1&Sort=6-D&GeoIds=g30_dpsbxd9c&GeoName=Windsor%2C+ON&PropertyTypeGroupID=1&PropertySearchTypeId=1&Currency=CAD"
+	log.Printf("Enrichment warmup: navigating to search page")
+
+	_, err = page.Goto(searchURL, playwright.PageGotoOptions{
+		Timeout:   playwright.Float(60000),
+		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+	})
+	if err != nil {
+		log.Printf("Enrichment warmup: navigation error: %v", err)
+	}
+
+	// Wait and simulate human behavior
+	page.WaitForTimeout(3000)
+	page.Mouse().Move(float64(300+rand.Intn(400)), float64(200+rand.Intn(300)))
+	page.WaitForTimeout(500)
+	page.Mouse().Move(float64(400+rand.Intn(300)), float64(300+rand.Intn(200)))
+	page.WaitForTimeout(500)
+
+	// Scroll a bit
+	page.Evaluate(`window.scrollBy(0, 200)`)
+	page.WaitForTimeout(1000)
+
+	// Handle consent popup
+	consentSelectors := []string{
+		"button:has-text('Consent')",
+		"button:has-text('Accept')",
+		"button:has-text('I Accept')",
+		"#didomi-notice-agree-button",
+	}
+	for _, sel := range consentSelectors {
+		btn := page.Locator(sel).First()
+		if visible, _ := btn.IsVisible(); visible {
+			log.Printf("Enrichment warmup: clicking consent button")
+			btn.Click()
+			page.WaitForTimeout(1000)
+			break
+		}
+	}
+
+	// Check for Incapsula and handle - wait longer
+	for i := 0; i < 10; i++ {
+		content, _ := page.Content()
+		if strings.Contains(content, "listingCard") || strings.Contains(content, "ResultsPaginationCon") {
+			log.Println("Enrichment warmup: search results loaded successfully")
+			break
+		}
+		if strings.Contains(content, "Incapsula") {
+			log.Println("Enrichment warmup: handling Incapsula challenge...")
+			w.handleIncapsula(page)
+		}
+		page.WaitForTimeout(2000)
+	}
+
+	// Click on a listing to warm up that path too
+	listingLink := page.Locator("a.listingDetailsLink").First()
+	if visible, _ := listingLink.IsVisible(); visible {
+		log.Println("Enrichment warmup: clicking a listing to warm up detail page")
+		listingLink.Click()
+		page.WaitForTimeout(5000)
+
+		// Check for Incapsula on detail page
+		content, _ := page.Content()
+		if strings.Contains(content, "Incapsula") {
+			log.Println("Enrichment warmup: handling Incapsula on detail page...")
+			w.handleIncapsula(page)
+			page.WaitForTimeout(3000)
+		}
+	}
+
+	log.Println("Enrichment: warmup complete")
+	return nil
+}
+
 type EnrichedData struct {
-	// Photos
-	Photos []string `json:"photos"`
-
-	// Property summary
-	PropertyType      string `json:"property_type"`
-	BuildingType      string `json:"building_type"`
-	Stories           int    `json:"stories"`
-	SqFt              int    `json:"sqft"`
-	NeighbourhoodName string `json:"neighbourhood_name"`
-	Title             string `json:"title"` // Freehold, Condo, etc.
-	YearBuilt         int    `json:"year_built"`
-	ParkingType       string `json:"parking_type"`
-	TimeOnMarket      string `json:"time_on_market"`
-
-	// Building details
-	BathroomsTotal   int      `json:"bathrooms_total"`
-	BathroomsPartial int      `json:"bathrooms_partial"`
-	Appliances       []string `json:"appliances"`
-	BasementType     string   `json:"basement_type"`
-	Features         []string `json:"features"`
-	Style            string   `json:"style"`
-	FireProtection   string   `json:"fire_protection"`
+	Photos            []string `json:"photos"`
+	Description       string   `json:"description"`
+	PropertyType      string   `json:"property_type"`
+	Stories           int      `json:"stories"`
+	YearBuilt         int      `json:"year_built"`
+	Appliances        []string `json:"appliances"`
+	BasementType      string   `json:"basement_type"`
+	Cooling           string   `json:"cooling"`
+	HeatingType       string   `json:"heating_type"`
+	FireplaceType     string   `json:"fireplace_type"`
+	AmenitiesNearby   []string `json:"amenities_nearby"`
 	BuildingAmenities []string `json:"building_amenities"`
-	Structures       []string `json:"structures"`
-
-	// HVAC
-	Cooling      string `json:"cooling"`
-	HeatingType  string `json:"heating_type"`
-	FireplaceType string `json:"fireplace_type"`
-
-	// Neighbourhood
-	AmenitiesNearby []string `json:"amenities_nearby"`
-
-	// Parking
-	TotalParkingSpaces int `json:"total_parking_spaces"`
-
-	// Rooms
-	Rooms []Room `json:"rooms"`
-
-	// Land
-	Fencing     string `json:"fencing"`
-	LotFeatures []string `json:"lot_features"`
-
-	// Legal
-	LegalDescription string `json:"legal_description"`
-
-	// Agent info
-	Agent     *AgentInfo     `json:"agent"`
-	Brokerage *BrokerageInfo `json:"brokerage"`
-
-	// Full description (may be longer than Apify)
-	Description string `json:"description"`
+	Structures        []string `json:"structures"`
+	FireProtection    string   `json:"fire_protection"`
+	TotalParkingSpaces int     `json:"total_parking_spaces"`
+	NeighbourhoodName string   `json:"neighbourhood_name"`
+	Title             string   `json:"title"`
+	Rooms             []Room   `json:"rooms"`
+	LegalDescription  string   `json:"legal_description"`
 }
 
-// Room represents a room with dimensions
 type Room struct {
-	Floor      string `json:"floor"`
-	Name       string `json:"name"`
-	Dimensions string `json:"dimensions"` // Imperial format
+	Type       string `json:"type"`
+	Level      string `json:"level"`
+	Dimensions string `json:"dimensions"`
 }
 
-// AgentInfo contains agent details
-type AgentInfo struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Title    string `json:"title"`
-	Phone    string `json:"phone"`
-	URL      string `json:"url"`
-}
-
-// BrokerageInfo contains brokerage details
-type BrokerageInfo struct {
-	ID      string `json:"id"`
-	Name    string `json:"name"`
-	Address string `json:"address"`
-	Phone   string `json:"phone"`
-	Website string `json:"website"`
-}
-
-// Enrich fetches a listing URL and extracts detailed data
 func (w *EnrichmentWorker) Enrich(ctx context.Context, listingURL string) (*EnrichedData, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", listingURL, nil)
+	// Try ScrapingBee first if available (faster, cheaper - 1 credit per request)
+	if w.scrapingBeeKey != "" {
+		data, err := w.enrichWithScrapingBee(ctx, listingURL)
+		if err == nil {
+			return data, nil
+		}
+		log.Printf("Enrichment: ScrapingBee failed (%v), falling back to Playwright", err)
+	}
+
+	// Fallback to Playwright
+	return w.enrichWithPlaywright(ctx, listingURL)
+}
+
+func (w *EnrichmentWorker) enrichWithScrapingBee(ctx context.Context, listingURL string) (*EnrichedData, error) {
+	params := url.Values{}
+	params.Set("api_key", w.scrapingBeeKey)
+	params.Set("url", listingURL)
+	// Static mode: 1 credit, JS renders client-side but CDN URLs are in HTML
+
+	apiURL := "https://app.scrapingbee.com/api/v1/?" + params.Encode()
+
+	log.Printf("Enrichment (ScrapingBee): fetching %s", listingURL)
+
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-	req.Header.Set("Accept", "text/html,application/xhtml+xml")
-	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
-
 	resp, err := w.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode == 404 || resp.StatusCode == 301 || resp.StatusCode == 302 {
-		return nil, fmt.Errorf("listing not found: %d", resp.StatusCode)
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read body: %w", err)
 	}
 
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("unexpected status: %d", resp.StatusCode)
+		return nil, fmt.Errorf("ScrapingBee returned %d: %s", resp.StatusCode, string(body[:min(500, len(body))]))
 	}
 
-	return w.ParseHTML(resp.Body)
+	html := string(body)
+
+	// Check for Incapsula block (shouldn't happen with ScrapingBee but just in case)
+	if strings.Contains(html, "Request unsuccessful") && !strings.Contains(html, "listingPhotosCon") {
+		return nil, fmt.Errorf("blocked by Incapsula")
+	}
+
+	// Check we got actual listing content
+	if !strings.Contains(html, "cdn.realtor.ca") && !strings.Contains(html, "listingPhotosCon") {
+		return nil, fmt.Errorf("no listing content found")
+	}
+
+	log.Printf("Enrichment (ScrapingBee): got %d bytes", len(body))
+	return w.extractDataFromHTML(html)
 }
 
-// ParseHTML parses the HTML and extracts enriched data
-func (w *EnrichmentWorker) ParseHTML(r io.Reader) (*EnrichedData, error) {
-	doc, err := goquery.NewDocumentFromReader(r)
-	if err != nil {
-		return nil, fmt.Errorf("parse html: %w", err)
+func (w *EnrichmentWorker) enrichWithPlaywright(ctx context.Context, listingURL string) (*EnrichedData, error) {
+	if err := w.ensureBrowser(); err != nil {
+		return nil, err
 	}
 
+	page, err := w.context.NewPage()
+	if err != nil {
+		return nil, fmt.Errorf("create page: %w", err)
+	}
+	defer page.Close()
+
+	page.SetViewportSize(1920, 1080)
+
+	log.Printf("Enrichment (Playwright): navigating to %s", listingURL)
+	_, err = page.Goto(listingURL, playwright.PageGotoOptions{
+		Timeout:   playwright.Float(60000),
+		WaitUntil: playwright.WaitUntilStateDomcontentloaded,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("navigate: %w", err)
+	}
+
+	page.WaitForTimeout(3000)
+	w.simulateHuman(page)
+
+	for attempt := 0; attempt < 5; attempt++ {
+		content, _ := page.Content()
+
+		if strings.Contains(content, "listingPhotosCon") || strings.Contains(content, "propertyDescriptionCon") {
+			log.Println("Enrichment (Playwright): listing page loaded successfully")
+			break
+		}
+
+		if strings.Contains(content, "Incapsula") || strings.Contains(content, "Request unsuccessful") {
+			log.Printf("Enrichment (Playwright): Incapsula detected (attempt %d), handling...", attempt+1)
+			w.handleIncapsula(page)
+			page.WaitForTimeout(5000)
+			w.simulateHuman(page)
+		} else {
+			page.WaitForTimeout(2000)
+		}
+	}
+
+	content, _ := page.Content()
+	if strings.Contains(content, "Incapsula") {
+		return nil, fmt.Errorf("blocked by Incapsula after retries")
+	}
+
+	os.WriteFile("/tmp/enrich_debug.html", []byte(content), 0644)
+	log.Printf("Enrichment (Playwright): saved page HTML (%d bytes)", len(content))
+
+	return w.extractDataFromHTML(content)
+}
+
+func (w *EnrichmentWorker) extractData(page playwright.Page) (*EnrichedData, error) {
 	data := &EnrichedData{}
 
-	// Extract photos from image grid
-	doc.Find("#imageListOuterCon img.gridViewListingImage").Each(func(i int, s *goquery.Selection) {
-		if src, exists := s.Attr("src"); exists && src != "" {
-			data.Photos = append(data.Photos, src)
+	// Extract photos - try multiple selectors
+	photoSelectors := []string{
+		"#imageGrid img.gridViewListingImage",
+		"#imageListOuterCon img",
+		".imageGallerySidebarCon img",
+		"#listingPhotosCon img",
+	}
+
+	photoSet := make(map[string]bool)
+	for _, sel := range photoSelectors {
+		photos, _ := page.Locator(sel).All()
+		for _, photo := range photos {
+			src, _ := photo.GetAttribute("src")
+			dataSrc, _ := photo.GetAttribute("data-src")
+
+			url := src
+			if dataSrc != "" && strings.Contains(dataSrc, "realtor.ca") {
+				url = dataSrc
+			}
+
+			if url != "" && strings.Contains(url, "realtor.ca") && !photoSet[url] {
+				// Convert to high-res
+				url = strings.Replace(url, "/lowres/", "/highres/", 1)
+				url = strings.Replace(url, "/medres/", "/highres/", 1)
+				photoSet[url] = true
+				data.Photos = append(data.Photos, url)
+			}
 		}
-	})
+	}
 
 	// Extract description
-	data.Description = strings.TrimSpace(doc.Find("#propertyDescriptionCon").Text())
+	desc, _ := page.Locator("#propertyDescriptionCon").TextContent()
+	data.Description = strings.TrimSpace(desc)
 
-	// Property summary section
-	data.PropertyType = w.extractValue(doc, "#propertyDetailsSectionContentSubCon_PropertyType")
-	data.BuildingType = w.extractValue(doc, "#propertyDetailsSectionContentSubCon_BuildingType")
-	data.Stories = w.extractInt(doc, "#propertyDetailsSectionContentSubCon_Stories")
-	data.SqFt = w.extractSqFt(doc, "#propertyDetailsSectionContentSubCon_SquareFootage")
-	data.NeighbourhoodName = w.extractValue(doc, "#propertyDetailsSectionContentSubCon_NeighborhoodName")
-	data.Title = w.extractValue(doc, "#propertyDetailsSectionContentSubCon_Title")
-	data.YearBuilt = w.extractInt(doc, "#propertyDetailsSectionContentSubCon_BuiltIn")
-	data.ParkingType = w.extractValue(doc, "#propertyDetailsSectionContentSubCon_ParkingType")
-	data.TimeOnMarket = w.extractValue(doc, "#propertyDetailsSectionContentSubCon_TimeOnRealtor")
+	// Extract property details
+	data.PropertyType = w.extractText(page, "#propertyDetailsSectionContentSubCon_PropertyType .propertyDetailsSectionContentValue")
+	data.Stories = w.extractInt(page, "#propertyDetailsSectionContentSubCon_Stories .propertyDetailsSectionContentValue")
+	data.YearBuilt = w.extractInt(page, "#propertyDetailsSectionContentSubCon_BuiltIn .propertyDetailsSectionContentValue")
+	data.NeighbourhoodName = w.extractText(page, "#propertyDetailsSectionContentSubCon_NeighborhoodName .propertyDetailsSectionContentValue")
+	data.Title = w.extractText(page, "#propertyDetailsSectionContentSubCon_Title .propertyDetailsSectionContentValue")
 
-	// Building section - Bathrooms
-	data.BathroomsTotal = w.extractInt(doc, "#propertyDetailsSectionVal_Total")
-	data.BathroomsPartial = w.extractInt(doc, "#propertyDetailsSectionVal_Partial")
-
-	// Interior features
-	data.Appliances = w.extractList(doc, "#propertyDetailsSectionVal_AppliancesIncluded")
-	data.BasementType = w.extractValue(doc, "#propertyDetailsSectionVal_BasementType")
-
-	// Building features
-	data.Features = w.extractList(doc, "#propertyDetailsSectionVal_Features")
-	data.Style = w.extractValue(doc, "#propertyDetailsSectionVal_Style")
-	data.FireProtection = w.extractValue(doc, "#propertyDetailsSectionVal_FireProtection")
-	data.BuildingAmenities = w.extractList(doc, "#propertyDetailsSectionVal_BuildingAmenities")
-	data.Structures = w.extractList(doc, "#propertyDetailsSectionVal_Structures")
-
-	// HVAC
-	data.Cooling = w.extractValue(doc, "#propertyDetailsSectionVal_Cooling")
-	data.HeatingType = w.extractValue(doc, "#propertyDetailsSectionVal_HeatingType")
-	data.FireplaceType = w.extractValue(doc, "#propertyDetailsSectionVal_FireplaceType")
-
-	// Neighbourhood
-	data.AmenitiesNearby = w.extractList(doc, "#propertyDetailsSectionVal_AmenitiesNearby")
-
-	// Parking
-	data.TotalParkingSpaces = w.extractInt(doc, "#propertyDetailsSectionVal_TotalParkingSpaces")
-
-	// Rooms
-	data.Rooms = w.extractRooms(doc)
-
-	// Land
-	data.Fencing = w.extractValue(doc, "#propertyDetailsSectionContentSubCon_Fencing")
+	// Building details
+	data.Appliances = w.extractList(page, "#propertyDetailsSectionVal_AppliancesIncluded .propertyDetailsSectionContentValue")
+	data.BasementType = w.extractText(page, "#propertyDetailsSectionVal_BasementType .propertyDetailsSectionContentValue")
+	data.Cooling = w.extractText(page, "#propertyDetailsSectionVal_Cooling .propertyDetailsSectionContentValue")
+	data.HeatingType = w.extractText(page, "#propertyDetailsSectionVal_HeatingType .propertyDetailsSectionContentValue")
+	data.FireplaceType = w.extractText(page, "#propertyDetailsSectionVal_FireplaceType .propertyDetailsSectionContentValue")
+	data.FireProtection = w.extractText(page, "#propertyDetailsSectionVal_FireProtection .propertyDetailsSectionContentValue")
+	data.BuildingAmenities = w.extractList(page, "#propertyDetailsSectionVal_BuildingAmenities .propertyDetailsSectionContentValue")
+	data.Structures = w.extractList(page, "#propertyDetailsSectionVal_Structures .propertyDetailsSectionContentValue")
+	data.AmenitiesNearby = w.extractList(page, "#propertyDetailsSectionVal_AmenitiesNearby .propertyDetailsSectionContentValue")
+	data.TotalParkingSpaces = w.extractInt(page, "#propertyDetailsSectionVal_TotalParkingSpaces .propertyDetailsSectionContentValue")
 
 	// Legal description
-	data.LegalDescription = strings.TrimSpace(doc.Find("#propertyLegalDescriptionCon").Text())
+	legal, _ := page.Locator("#propertyLegalDescriptionCon").TextContent()
+	data.LegalDescription = strings.TrimSpace(legal)
 
-	// Agent info
-	data.Agent = w.extractAgent(doc)
-
-	// Brokerage info
-	data.Brokerage = w.extractBrokerage(doc)
+	// Rooms
+	data.Rooms = w.extractRooms(page)
 
 	return data, nil
 }
 
-func (w *EnrichmentWorker) extractValue(doc *goquery.Document, selector string) string {
-	return strings.TrimSpace(doc.Find(selector + " .propertyDetailsSectionContentValue").Text())
+func (w *EnrichmentWorker) extractText(page playwright.Page, selector string) string {
+	text, err := page.Locator(selector).First().TextContent()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(text)
 }
 
-func (w *EnrichmentWorker) extractInt(doc *goquery.Document, selector string) int {
-	text := w.extractValue(doc, selector)
+func (w *EnrichmentWorker) extractInt(page playwright.Page, selector string) int {
+	text := w.extractText(page, selector)
 	var num int
 	fmt.Sscanf(text, "%d", &num)
 	return num
 }
 
-func (w *EnrichmentWorker) extractSqFt(doc *goquery.Document, selector string) int {
-	text := w.extractValue(doc, selector)
-	// Parse "1888 sqft" -> 1888
-	var num int
-	fmt.Sscanf(text, "%d", &num)
-	return num
-}
-
-func (w *EnrichmentWorker) extractList(doc *goquery.Document, selector string) []string {
-	text := w.extractValue(doc, selector)
+func (w *EnrichmentWorker) extractList(page playwright.Page, selector string) []string {
+	text := w.extractText(page, selector)
 	if text == "" {
 		return nil
 	}
-	parts := strings.Split(text, ",")
-	var result []string
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			result = append(result, p)
+	var items []string
+	for _, item := range strings.Split(text, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			items = append(items, trimmed)
 		}
 	}
-	return result
+	return items
 }
 
-func (w *EnrichmentWorker) extractRooms(doc *goquery.Document) []Room {
-	var rooms []Room
-	var currentFloor string
+// extractDataFromHTML parses HTML directly (faster than Playwright locators)
+func (w *EnrichmentWorker) extractDataFromHTML(html string) (*EnrichedData, error) {
+	data := &EnrichedData{}
 
-	doc.Find(".listingDetailsRoomDetailsCon").Each(func(i int, s *goquery.Selection) {
-		floor := strings.TrimSpace(s.Find(".listingDetailsRoomDetails_Floor").Text())
-		if floor != "" {
-			currentFloor = floor
+	// Extract photo URLs - look for cdn.realtor.ca listing images
+	photoRegex := regexp.MustCompile(`https://cdn\.realtor\.ca/listing/[^"'\s]+\.jpg`)
+	photoMatches := photoRegex.FindAllString(html, -1)
+
+	photoSet := make(map[string]bool)
+	for _, url := range photoMatches {
+		// Convert to highres
+		url = strings.Replace(url, "/lowres/", "/highres/", 1)
+		url = strings.Replace(url, "/medres/", "/highres/", 1)
+		if !photoSet[url] {
+			photoSet[url] = true
+			data.Photos = append(data.Photos, url)
 		}
+	}
 
-		name := strings.TrimSpace(s.Find(".listingDetailsRoomDetails_Room").Text())
-		dims := strings.TrimSpace(s.Find(".listingDetailsRoomDetails_Dimensions.Imperial").Text())
+	// Extract description
+	descRegex := regexp.MustCompile(`id="PropertyDescription"[^>]*>([^<]+)`)
+	if match := descRegex.FindStringSubmatch(html); len(match) > 1 {
+		data.Description = strings.TrimSpace(match[1])
+	}
 
-		if name != "" {
-			rooms = append(rooms, Room{
-				Floor:      currentFloor,
-				Name:       name,
-				Dimensions: dims,
+	// Extract rooms - pattern: listingDetailsRoomDetails_Room">Room Type</div>
+	roomRegex := regexp.MustCompile(`listingDetailsRoomDetails_Floor">([^<]+)</div>\s*<div class="listingDetailsRoomDetails_Room">([^<]+)`)
+	roomMatches := roomRegex.FindAllStringSubmatch(html, -1)
+	for _, match := range roomMatches {
+		if len(match) >= 3 {
+			data.Rooms = append(data.Rooms, Room{
+				Level: strings.TrimSpace(match[1]),
+				Type:  strings.TrimSpace(match[2]),
 			})
 		}
-	})
+	}
 
+	log.Printf("Enrichment: extracted %d photos, %d rooms", len(data.Photos), len(data.Rooms))
+	return data, nil
+}
+
+func (w *EnrichmentWorker) extractRooms(page playwright.Page) []Room {
+	var rooms []Room
+
+	rows, _ := page.Locator(".propertyRoomsCon tr").All()
+	for _, row := range rows {
+		cols, _ := row.Locator("td").All()
+		if len(cols) >= 3 {
+			roomType, _ := cols[0].TextContent()
+			level, _ := cols[1].TextContent()
+			dims, _ := cols[2].TextContent()
+
+			rooms = append(rooms, Room{
+				Type:       strings.TrimSpace(roomType),
+				Level:      strings.TrimSpace(level),
+				Dimensions: strings.TrimSpace(dims),
+			})
+		}
+	}
 	return rooms
 }
 
-func (w *EnrichmentWorker) extractAgent(doc *goquery.Document) *AgentInfo {
-	card := doc.Find(".realtorCardCon").First()
-	if card.Length() == 0 {
-		return nil
+func (w *EnrichmentWorker) handleIncapsula(page playwright.Page) {
+	// Wait for challenge to load
+	page.WaitForTimeout(2000)
+
+	// Try clicking various elements
+	clickSelectors := []string{
+		"iframe#main-iframe",
+		"[id*='checkbox']",
+		"input[type='checkbox']",
+		"button:has-text('Verify')",
+		"button:has-text('Continue')",
 	}
 
-	// Extract ID from card ID attribute (RealtorCard-1935675)
-	cardID, _ := card.Attr("id")
-	id := strings.TrimPrefix(cardID, "RealtorCard-")
-
-	name := strings.TrimSpace(card.Find(".realtorCardName").Text())
-	if name == "" {
-		return nil
+	for _, sel := range clickSelectors {
+		el := page.Locator(sel).First()
+		if visible, _ := el.IsVisible(); visible {
+			log.Printf("Enrichment: clicking %s", sel)
+			el.Click()
+			page.WaitForTimeout(3000)
+			break
+		}
 	}
 
-	title := strings.TrimSpace(card.Find(".realtorCardTitle").Text())
-	phone := strings.TrimSpace(card.Find(".realtorCardContactNumber").Text())
-	url, _ := card.Find(".realtorCardDetailsLink").Attr("href")
+	// Check iframes
+	for _, frame := range page.Frames() {
+		if frame == page.MainFrame() {
+			continue
+		}
 
-	return &AgentInfo{
-		ID:    id,
-		Name:  name,
-		Title: title,
-		Phone: phone,
-		URL:   url,
-	}
-}
-
-func (w *EnrichmentWorker) extractBrokerage(doc *goquery.Document) *BrokerageInfo {
-	card := doc.Find(".officeCardCon").First()
-	if card.Length() == 0 {
-		return nil
-	}
-
-	// Extract ID from class (OfficeCard-290197)
-	class, _ := card.Attr("class")
-	idMatch := regexp.MustCompile(`OfficeCard-(\d+)`).FindStringSubmatch(class)
-	var id string
-	if len(idMatch) > 1 {
-		id = idMatch[1]
-	}
-
-	name := strings.TrimSpace(card.Find(".officeCardName").Text())
-	if name == "" {
-		return nil
-	}
-
-	address := strings.TrimSpace(card.Find(".officeCardAddress").Text())
-	address = strings.ReplaceAll(address, "\n", " ")
-	address = regexp.MustCompile(`\s+`).ReplaceAllString(address, " ")
-
-	phone := strings.TrimSpace(card.Find(".officeCardContactNumber").First().Text())
-	website, _ := card.Find(".officeCardWebsite").Attr("href")
-
-	return &BrokerageInfo{
-		ID:      id,
-		Name:    name,
-		Address: address,
-		Phone:   phone,
-		Website: website,
+		iframeSelectors := []string{"[id*='checkbox']", "input[type='checkbox']", "button"}
+		for _, sel := range iframeSelectors {
+			el := frame.Locator(sel).First()
+			if visible, _ := el.IsVisible(); visible {
+				el.Click()
+				page.WaitForTimeout(3000)
+				return
+			}
+		}
 	}
 }
 
-// UpdateListing updates the listing record with enriched data
+func (w *EnrichmentWorker) simulateHuman(page playwright.Page) {
+	// Random mouse movements
+	page.Mouse().Move(float64(300+rand.Intn(400)), float64(200+rand.Intn(300)))
+	page.WaitForTimeout(float64(100 + rand.Intn(200)))
+
+	// Small scroll
+	page.Evaluate(fmt.Sprintf(`window.scrollBy(0, %d)`, 100+rand.Intn(200)))
+	page.WaitForTimeout(float64(200 + rand.Intn(300)))
+}
+
 func (w *EnrichmentWorker) UpdateListing(ctx context.Context, listingID uuid.UUID, data *EnrichedData) error {
-	// Convert enriched data to JSON for storage in listing.features or listing.raw_data
 	featuresJSON, err := json.Marshal(map[string]interface{}{
 		"appliances":          data.Appliances,
 		"basement_type":       data.BasementType,
@@ -380,7 +608,6 @@ func (w *EnrichmentWorker) UpdateListing(ctx context.Context, listingID uuid.UUI
 		return fmt.Errorf("marshal features: %w", err)
 	}
 
-	// Update listing with enriched features
 	query := `
 		UPDATE listings SET
 			features = $2,
@@ -389,14 +616,13 @@ func (w *EnrichmentWorker) UpdateListing(ctx context.Context, listingID uuid.UUI
 			updated_at = NOW()
 		WHERE id = $1`
 
-	_, err = w.store.Pool().Exec(ctx, query, listingID, featuresJSON, data.Description, data.Stories)
+	_, err = w.store.Pool().Exec(ctx, query, listingID, string(featuresJSON), data.Description, data.Stories)
 	if err != nil {
 		return fmt.Errorf("update listing: %w", err)
 	}
 
-	// Queue photos for media worker
+	// Queue photos
 	if w.mediaService != nil && len(data.Photos) > 0 {
-		// Get property location for S3 path
 		province, city := w.getListingLocation(ctx, listingID)
 		for _, photoURL := range data.Photos {
 			if _, err := w.mediaService.Enqueue(ctx, services.EnqueueParams{
@@ -411,7 +637,7 @@ func (w *EnrichmentWorker) UpdateListing(ctx context.Context, listingID uuid.UUI
 		}
 	}
 
-	// Update property with year_built if available
+	// Update year_built on property
 	if data.YearBuilt > 0 {
 		propQuery := `
 			UPDATE properties SET
@@ -424,10 +650,10 @@ func (w *EnrichmentWorker) UpdateListing(ctx context.Context, listingID uuid.UUI
 	return nil
 }
 
-// Run starts the enrichment worker loop
 func (w *EnrichmentWorker) Run(ctx context.Context, batchSize int, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
+	defer w.closeBrowser()
 
 	for {
 		select {
@@ -441,8 +667,6 @@ func (w *EnrichmentWorker) Run(ctx context.Context, batchSize int, interval time
 }
 
 func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
-	// Get listings that need enrichment (no features set yet)
-	// We only try listings with < 3 attempts
 	query := `
 		SELECT id, url, enrichment_attempts
 		FROM listings
@@ -467,7 +691,6 @@ func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
 	for rows.Next() {
 		var l listingToEnrich
 		if err := rows.Scan(&l.ID, &l.URL, &l.Attempts); err != nil {
-			log.Printf("Enrichment: scan error: %v", err)
 			continue
 		}
 		listings = append(listings, l)
@@ -483,11 +706,9 @@ func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
 		data, err := w.Enrich(ctx, l.URL)
 		if err != nil {
 			log.Printf("Enrichment: failed to enrich %s: %v", l.URL, err)
-			
-			// Increment attempts
+
 			w.store.Pool().Exec(ctx, `UPDATE listings SET enrichment_attempts = enrichment_attempts + 1, updated_at = NOW() WHERE id = $1`, l.ID)
-			
-			// If we reached max attempts, mark as failed (by setting empty features so it stops retrying)
+
 			if l.Attempts+1 >= 3 {
 				log.Printf("Enrichment: max attempts reached for %s, giving up", l.ID)
 				w.store.Pool().Exec(ctx, `UPDATE listings SET features = '{}' WHERE id = $1`, l.ID)
@@ -502,12 +723,11 @@ func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
 
 		log.Printf("Enrichment: enriched %s (%d photos, %d rooms)", l.ID, len(data.Photos), len(data.Rooms))
 
-		// Rate limit between requests
-		time.Sleep(500 * time.Millisecond)
+		// Longer delay between requests to avoid detection
+		time.Sleep(time.Duration(2000+rand.Intn(3000)) * time.Millisecond)
 	}
 }
 
-// getListingLocation returns the province and city for a listing's property
 func (w *EnrichmentWorker) getListingLocation(ctx context.Context, listingID uuid.UUID) (province, city string) {
 	query := `
 		SELECT p.province, p.city
@@ -517,3 +737,30 @@ func (w *EnrichmentWorker) getListingLocation(ctx context.Context, listingID uui
 	w.store.Pool().QueryRow(ctx, query, listingID).Scan(&province, &city)
 	return
 }
+
+// parseProxyURL parses a proxy URL with embedded credentials into Playwright format
+func parseProxyURL(proxyURL string) (*playwright.Proxy, error) {
+	u, err := url.Parse(proxyURL)
+	if err != nil {
+		return nil, err
+	}
+
+	proxy := &playwright.Proxy{
+		Server: fmt.Sprintf("%s://%s", u.Scheme, u.Host),
+	}
+
+	if u.User != nil {
+		username := u.User.Username()
+		proxy.Username = &username
+		if password, ok := u.User.Password(); ok {
+			proxy.Password = &password
+		}
+	}
+
+	return proxy, nil
+}
+
+// Keep these for compatibility but they're unused now
+var _ = regexp.MustCompile
+var _ = os.Getwd
+var _ = filepath.Join
