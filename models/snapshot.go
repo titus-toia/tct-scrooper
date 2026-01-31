@@ -30,6 +30,7 @@ type RealtorCompany struct {
 	Name    string `json:"name"`
 	Phone   string `json:"phone"`
 	Address string `json:"address"`
+	Logo    string `json:"logo"`
 }
 
 type RealtorAgent struct {

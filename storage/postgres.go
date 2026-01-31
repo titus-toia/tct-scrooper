@@ -374,9 +374,9 @@ func (s *PostgresStore) UpsertPropertyLink(ctx context.Context, pl *models.Prope
 func (s *PostgresStore) UpsertMedia(ctx context.Context, m *models.Media) error {
 	query := `
 		INSERT INTO media (
-			id, s3_key, content_hash, media_type, mime_type, file_size_bytes,
+			id, s3_key, content_hash, media_type, category, province, city, mime_type, file_size_bytes,
 			original_url, height, width, pages, duration, metadata, status, attempts, created_at
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		ON CONFLICT (original_url) DO UPDATE SET
 			s3_key = COALESCE(EXCLUDED.s3_key, media.s3_key),
 			content_hash = COALESCE(EXCLUDED.content_hash, media.content_hash),
@@ -388,20 +388,20 @@ func (s *PostgresStore) UpsertMedia(ctx context.Context, m *models.Media) error 
 		RETURNING id`
 
 	return s.pool.QueryRow(ctx, query,
-		m.ID, m.S3Key, m.ContentHash, m.MediaType, m.MimeType, m.FileSizeBytes,
+		m.ID, m.S3Key, m.ContentHash, m.MediaType, m.Category, m.Province, m.City, m.MimeType, m.FileSizeBytes,
 		m.OriginalURL, m.Height, m.Width, m.Pages, m.Duration, m.Metadata, m.Status, m.Attempts, m.CreatedAt,
 	).Scan(&m.ID)
 }
 
 func (s *PostgresStore) GetMediaByOriginalURL(ctx context.Context, url string) (*models.Media, error) {
 	query := `
-		SELECT id, s3_key, content_hash, media_type, mime_type, file_size_bytes,
+		SELECT id, s3_key, content_hash, media_type, category, province, city, mime_type, file_size_bytes,
 			original_url, height, width, pages, duration, metadata, status, attempts, created_at
 		FROM media WHERE original_url = $1`
 
 	var m models.Media
 	err := s.pool.QueryRow(ctx, query, url).Scan(
-		&m.ID, &m.S3Key, &m.ContentHash, &m.MediaType, &m.MimeType, &m.FileSizeBytes,
+		&m.ID, &m.S3Key, &m.ContentHash, &m.MediaType, &m.Category, &m.Province, &m.City, &m.MimeType, &m.FileSizeBytes,
 		&m.OriginalURL, &m.Height, &m.Width, &m.Pages, &m.Duration, &m.Metadata, &m.Status, &m.Attempts, &m.CreatedAt,
 	)
 	if err == pgx.ErrNoRows {
@@ -415,7 +415,7 @@ func (s *PostgresStore) GetMediaByOriginalURL(ctx context.Context, url string) (
 
 func (s *PostgresStore) GetPendingMedia(ctx context.Context, limit int) ([]models.Media, error) {
 	query := `
-		SELECT id, s3_key, content_hash, media_type, mime_type, file_size_bytes,
+		SELECT id, s3_key, content_hash, media_type, category, province, city, mime_type, file_size_bytes,
 			original_url, height, width, pages, duration, metadata, status, attempts, created_at
 		FROM media
 		WHERE status = 'pending' AND attempts < 3
@@ -432,7 +432,7 @@ func (s *PostgresStore) GetPendingMedia(ctx context.Context, limit int) ([]model
 	for rows.Next() {
 		var m models.Media
 		if err := rows.Scan(
-			&m.ID, &m.S3Key, &m.ContentHash, &m.MediaType, &m.MimeType, &m.FileSizeBytes,
+			&m.ID, &m.S3Key, &m.ContentHash, &m.MediaType, &m.Category, &m.Province, &m.City, &m.MimeType, &m.FileSizeBytes,
 			&m.OriginalURL, &m.Height, &m.Width, &m.Pages, &m.Duration, &m.Metadata, &m.Status, &m.Attempts, &m.CreatedAt,
 		); err != nil {
 			return nil, err

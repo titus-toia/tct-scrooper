@@ -107,8 +107,25 @@ func main() {
 	go healthcheckWorker.Run(ctx, 24*time.Hour, 20, 30*time.Minute) // check listings older than 24h, batch 20, every 30 min
 	log.Println("Healthcheck worker started")
 
-	// Media worker (with NoOp uploader for now - replace with real S3 uploader when configured)
-	mediaUploader := workers.NewNoOpUploader() // TODO: replace with real S3Uploader
+	// Media worker
+	var mediaUploader workers.S3Uploader
+	if cfg.HasMediaS3() {
+		s3Uploader, err := storage.NewS3Uploader(ctx, storage.S3Config{
+			Bucket:          cfg.MediaS3.Bucket,
+			Region:          cfg.MediaS3.Region,
+			Endpoint:        cfg.MediaS3.Endpoint,
+			AccessKeyID:     cfg.MediaS3.AccessKeyID,
+			SecretAccessKey: cfg.MediaS3.SecretAccessKey,
+		})
+		if err != nil {
+			log.Fatalf("Failed to create S3 uploader: %v", err)
+		}
+		mediaUploader = s3Uploader
+		log.Printf("S3 media uploader configured: bucket=%s region=%s", cfg.MediaS3.Bucket, cfg.MediaS3.Region)
+	} else {
+		mediaUploader = workers.NewNoOpUploader()
+		log.Println("S3 not configured - media worker will skip uploads")
+	}
 	mediaWorker := workers.NewMediaWorker(pgStore, mediaUploader, cfg.Proxy.URL)
 	go mediaWorker.Run(ctx, 20, 2*time.Minute) // batch of 20 every 2 min
 	log.Println("Media worker started")

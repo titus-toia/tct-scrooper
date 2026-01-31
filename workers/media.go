@@ -95,9 +95,9 @@ func (w *MediaWorker) Process(ctx context.Context, media *models.Media) MediaPro
 	hash := sha256.Sum256(data)
 	result.ContentHash = hex.EncodeToString(hash[:])
 
-	// Generate S3 key: media/{hash_prefix}/{hash}.{ext}
+	// Generate S3 key based on category
 	ext := guessExtension(media.OriginalURL, resp.Header.Get("Content-Type"))
-	result.S3Key = fmt.Sprintf("media/%s/%s%s", result.ContentHash[:2], result.ContentHash, ext)
+	result.S3Key = generateS3Key(media, result.ContentHash, ext)
 
 	// Upload to S3
 	if w.uploader != nil {
@@ -160,6 +160,57 @@ func isImageExt(ext string) bool {
 		return true
 	}
 	return false
+}
+
+// generateS3Key creates the S3 key based on media category and location
+// Schema:
+//   - listings/{province}/{city}/{hash}.{ext}  - property photos, floor plans
+//   - agents/{hash}.{ext}                      - agent headshots
+//   - brokerages/{hash}.{ext}                  - brokerage logos
+func generateS3Key(media *models.Media, contentHash, ext string) string {
+	switch media.Category {
+	case models.MediaCategoryListing:
+		// Use location for listing media (photos, floor plans)
+		return fmt.Sprintf("listings/%s/%s/%s%s", safeProvince(media.Province), safeCity(media.City), contentHash, ext)
+
+	case models.MediaCategoryProperty:
+		// Property-level docs (assessments, permits, surveys)
+		return fmt.Sprintf("properties/%s/%s/%s%s", safeProvince(media.Province), safeCity(media.City), contentHash, ext)
+
+	case models.MediaCategoryAgent:
+		return fmt.Sprintf("agents/%s%s", contentHash, ext)
+
+	case models.MediaCategoryBrokerage:
+		return fmt.Sprintf("brokerages/%s%s", contentHash, ext)
+
+	default:
+		// Fallback to old schema for uncategorized media
+		return fmt.Sprintf("media/%s/%s%s", contentHash[:2], contentHash, ext)
+	}
+}
+
+func safeProvince(p string) string {
+	if p == "" {
+		return "unknown"
+	}
+	return sanitizePath(p)
+}
+
+func safeCity(c string) string {
+	if c == "" {
+		return "unknown"
+	}
+	return sanitizePath(c)
+}
+
+// sanitizePath makes a string safe for use in S3 paths
+func sanitizePath(s string) string {
+	// Replace spaces and special chars with underscores, lowercase
+	s = strings.ToLower(s)
+	s = strings.ReplaceAll(s, " ", "_")
+	s = strings.ReplaceAll(s, "'", "")
+	s = strings.ReplaceAll(s, ".", "")
+	return s
 }
 
 // Run starts the media worker loop

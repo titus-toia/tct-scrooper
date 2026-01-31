@@ -86,6 +86,11 @@ CREATE TABLE media (
 	content_hash TEXT,
 	-- media_type: image, video, document
 	media_type TEXT DEFAULT 'image',
+	-- category: listing, agent, brokerage, property
+	category TEXT DEFAULT 'listing',
+	-- province/city for S3 path (listings/properties only)
+	province TEXT DEFAULT '',
+	city TEXT DEFAULT '',
 	mime_type TEXT,
 	file_size_bytes BIGINT,
 	original_url TEXT UNIQUE NOT NULL,
@@ -100,6 +105,8 @@ CREATE TABLE media (
 	metadata JSONB,
 	created_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+CREATE INDEX idx_media_category ON media(category);
 
 CREATE TABLE brokerages (
 	id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

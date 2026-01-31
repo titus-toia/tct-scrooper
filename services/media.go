@@ -19,11 +19,20 @@ func NewMediaService(store *storage.PostgresStore) *MediaService {
 	return &MediaService{store: store}
 }
 
+// EnqueueParams contains parameters for enqueueing media
+type EnqueueParams struct {
+	OriginalURL string
+	MediaType   string // image, video, document
+	Category    string // listing, agent, brokerage
+	Province    string // for listing media S3 paths
+	City        string // for listing media S3 paths
+}
+
 // Enqueue creates a media row with original_url and status=pending.
 // Returns the media ID (existing or new).
-func (s *MediaService) Enqueue(ctx context.Context, originalURL string, mediaType string) (uuid.UUID, error) {
+func (s *MediaService) Enqueue(ctx context.Context, params EnqueueParams) (uuid.UUID, error) {
 	// Check if media already exists
-	existing, err := s.store.GetMediaByOriginalURL(ctx, originalURL)
+	existing, err := s.store.GetMediaByOriginalURL(ctx, params.OriginalURL)
 	if err != nil {
 		return uuid.Nil, err
 	}
@@ -34,8 +43,11 @@ func (s *MediaService) Enqueue(ctx context.Context, originalURL string, mediaTyp
 	// Create new media entry
 	media := &models.Media{
 		ID:          uuid.New(),
-		OriginalURL: originalURL,
-		MediaType:   mediaType,
+		OriginalURL: params.OriginalURL,
+		MediaType:   params.MediaType,
+		Category:    params.Category,
+		Province:    params.Province,
+		City:        params.City,
 		Status:      models.MediaStatusPending,
 		Attempts:    0,
 		CreatedAt:   time.Now(),

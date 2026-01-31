@@ -112,6 +112,7 @@ type scrapemindListing struct {
 		Organization struct {
 			OrganizationID int    `json:"OrganizationID"`
 			Name           string `json:"Name"`
+			Logo           string `json:"Logo"`
 			Address        struct {
 				AddressText string `json:"AddressText"`
 			} `json:"Address"`
@@ -151,6 +152,7 @@ func extractScrapemindRealtor(individuals []struct {
 	Organization struct {
 		OrganizationID int    `json:"OrganizationID"`
 		Name           string `json:"Name"`
+		Logo           string `json:"Logo"`
 		Address        struct {
 			AddressText string `json:"AddressText"`
 		} `json:"Address"`
@@ -172,6 +174,7 @@ func extractScrapemindRealtor(individuals []struct {
 			Name:    firstOrg.Name,
 			Phone:   formatScrapemindPhone(firstOrg.Phones),
 			Address: firstOrg.Address.AddressText,
+			Logo:    firstOrg.Logo,
 		},
 	}
 

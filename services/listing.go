@@ -262,7 +262,13 @@ func (s *ListingService) ProcessListing(ctx context.Context, raw *models.RawList
 	// 7. Queue media (photos)
 	if s.media != nil && len(raw.Photos) > 0 {
 		for i, photoURL := range raw.Photos {
-			mediaID, err := s.media.Enqueue(ctx, photoURL, "image")
+			mediaID, err := s.media.Enqueue(ctx, EnqueueParams{
+				OriginalURL: photoURL,
+				MediaType:   "image",
+				Category:    models.MediaCategoryListing,
+				Province:    property.Province,
+				City:        property.City,
+			})
 			if err != nil {
 				log.Printf("Warning: failed to queue media %s: %v", photoURL, err)
 				continue
@@ -304,6 +310,18 @@ func (s *ListingService) processRealtor(ctx context.Context, realtor *models.Rea
 
 		if existing != nil {
 			brokerageID = &existing.ID
+			// Update logo if we didn't have one before
+			if existing.LogoID == nil && s.media != nil && realtor.Company.Logo != "" {
+				logoID, err := s.media.Enqueue(ctx, EnqueueParams{
+					OriginalURL: realtor.Company.Logo,
+					MediaType:   "image",
+					Category:    models.MediaCategoryBrokerage,
+				})
+				if err == nil {
+					existing.LogoID = &logoID
+					s.store.UpsertBrokerage(ctx, existing)
+				}
+			}
 		} else {
 			brokerage := &models.Brokerage{
 				ID:        uuid.New(),
@@ -312,6 +330,17 @@ func (s *ListingService) processRealtor(ctx context.Context, realtor *models.Rea
 				Address:   realtor.Company.Address,
 				Country:   "CA",
 				CreatedAt: now,
+			}
+			// Queue brokerage logo if available
+			if s.media != nil && realtor.Company.Logo != "" {
+				logoID, err := s.media.Enqueue(ctx, EnqueueParams{
+					OriginalURL: realtor.Company.Logo,
+					MediaType:   "image",
+					Category:    models.MediaCategoryBrokerage,
+				})
+				if err == nil {
+					brokerage.LogoID = &logoID
+				}
 			}
 			if err := s.store.UpsertBrokerage(ctx, brokerage); err != nil {
 				return fmt.Errorf("create brokerage: %w", err)
@@ -353,7 +382,11 @@ func (s *ListingService) processRealtor(ctx context.Context, realtor *models.Rea
 
 		// Queue agent headshot if available
 		if s.media != nil && agentData.Photo != "" {
-			mediaID, err := s.media.Enqueue(ctx, agentData.Photo, "image")
+			mediaID, err := s.media.Enqueue(ctx, EnqueueParams{
+				OriginalURL: agentData.Photo,
+				MediaType:   "image",
+				Category:    models.MediaCategoryAgent,
+			})
 			if err == nil {
 				agent.HeadshotID = &mediaID
 			}

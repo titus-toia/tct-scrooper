@@ -145,6 +145,7 @@ type canadeskListing struct {
 		Organization struct {
 			OrganizationID int    `json:"OrganizationID"`
 			Name           string `json:"Name"`
+			Logo           string `json:"Logo"`
 			Address        struct {
 				AddressText string `json:"AddressText"`
 			} `json:"Address"`
@@ -184,6 +185,7 @@ func extractCanadeskRealtor(individuals []struct {
 	Organization struct {
 		OrganizationID int    `json:"OrganizationID"`
 		Name           string `json:"Name"`
+		Logo           string `json:"Logo"`
 		Address        struct {
 			AddressText string `json:"AddressText"`
 		} `json:"Address"`
@@ -205,6 +207,7 @@ func extractCanadeskRealtor(individuals []struct {
 			Name:    firstOrg.Name,
 			Phone:   formatPhoneSlice(firstOrg.Phones),
 			Address: firstOrg.Address.AddressText,
+			Logo:    firstOrg.Logo,
 		},
 	}
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/PuerkitoBio/goquery"
 	"github.com/google/uuid"
+	"tct_scrooper/models"
 	"tct_scrooper/services"
 	"tct_scrooper/storage"
 )
@@ -385,9 +386,17 @@ func (w *EnrichmentWorker) UpdateListing(ctx context.Context, listingID uuid.UUI
 	}
 
 	// Queue photos for media worker
-	if w.mediaService != nil {
+	if w.mediaService != nil && len(data.Photos) > 0 {
+		// Get property location for S3 path
+		province, city := w.getListingLocation(ctx, listingID)
 		for _, photoURL := range data.Photos {
-			if _, err := w.mediaService.Enqueue(ctx, photoURL, "image"); err != nil {
+			if _, err := w.mediaService.Enqueue(ctx, services.EnqueueParams{
+				OriginalURL: photoURL,
+				MediaType:   "image",
+				Category:    models.MediaCategoryListing,
+				Province:    province,
+				City:        city,
+			}); err != nil {
 				log.Printf("Warning: failed to queue photo %s: %v", photoURL, err)
 			}
 		}
@@ -487,4 +496,15 @@ func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
 		// Rate limit between requests
 		time.Sleep(500 * time.Millisecond)
 	}
+}
+
+// getListingLocation returns the province and city for a listing's property
+func (w *EnrichmentWorker) getListingLocation(ctx context.Context, listingID uuid.UUID) (province, city string) {
+	query := `
+		SELECT p.province, p.city
+		FROM listings l
+		JOIN properties p ON p.id = l.property_id
+		WHERE l.id = $1`
+	w.store.Pool().QueryRow(ctx, query, listingID).Scan(&province, &city)
+	return
 }

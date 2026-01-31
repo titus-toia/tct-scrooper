@@ -76,7 +76,10 @@ type Media struct {
 	ID            uuid.UUID       `json:"id" db:"id"`
 	S3Key         *string         `json:"s3_key" db:"s3_key"` // nullable until uploaded
 	ContentHash   string          `json:"content_hash" db:"content_hash"`
-	MediaType     string          `json:"media_type" db:"media_type"` // image, video, document
+	MediaType     string          `json:"media_type" db:"media_type"`     // image, video, document
+	Category      string          `json:"category" db:"category"`         // listing, agent, brokerage
+	Province      string          `json:"province" db:"province"`         // for S3 path (listings only)
+	City          string          `json:"city" db:"city"`                 // for S3 path (listings only)
 	MimeType      string          `json:"mime_type" db:"mime_type"`
 	FileSizeBytes *int64          `json:"file_size_bytes" db:"file_size_bytes"`
 	OriginalURL   string          `json:"original_url" db:"original_url"`
@@ -249,6 +252,14 @@ const (
 	MediaStatusUploading = "uploading"
 	MediaStatusUploaded  = "uploaded"
 	MediaStatusFailed    = "failed"
+)
+
+// Media category
+const (
+	MediaCategoryListing   = "listing"   // listing photos, floor plans, videos
+	MediaCategoryAgent     = "agent"     // agent headshots
+	MediaCategoryBrokerage = "brokerage" // brokerage logos
+	MediaCategoryProperty  = "property"  // property-level docs (assessments, permits, surveys)
 )
 
 // Identifier types

@@ -16,9 +16,18 @@ type Config struct {
 	Supabase  SupabaseConfig
 	Scheduler SchedulerConfig
 	Scraper   ScraperConfig
+	MediaS3   MediaS3Config
 	DBPath    string
 	LogLevel  string
 	Sites     map[string]*SiteConfig
+}
+
+type MediaS3Config struct {
+	Bucket          string
+	Region          string
+	Endpoint        string // Optional: for DO Spaces, R2, etc.
+	AccessKeyID     string
+	SecretAccessKey string
 }
 
 type ProxyConfig struct {
@@ -75,7 +84,14 @@ func Load() (*Config, error) {
 		Scraper: ScraperConfig{
 			DelayMS: getEnvInt("SCRAPE_DELAY_MS", 500),
 		},
-		DBPath:   getEnv("DB_PATH", "scraper.db"),
+		MediaS3: MediaS3Config{
+			Bucket:          os.Getenv("MEDIA_S3_BUCKET"),
+			Region:          os.Getenv("MEDIA_S3_REGION"),
+			Endpoint:        os.Getenv("MEDIA_S3_ENDPOINT"),
+			AccessKeyID:     os.Getenv("MEDIA_S3_ACCESS_KEY_ID"),
+			SecretAccessKey: os.Getenv("MEDIA_S3_SECRET_ACCESS_KEY"),
+		},
+		DBPath: getEnv("DB_PATH", "scraper.db"),
 		LogLevel: getEnv("LOG_LEVEL", "info"),
 		Sites:    make(map[string]*SiteConfig),
 	}
@@ -129,6 +145,11 @@ func (c *Config) validate() error {
 // HasPostgres returns true if Postgres connection is configured
 func (c *Config) HasPostgres() bool {
 	return c.Supabase.DBURL != ""
+}
+
+// HasMediaS3 returns true if S3 media storage is configured
+func (c *Config) HasMediaS3() bool {
+	return c.MediaS3.Bucket != "" && c.MediaS3.AccessKeyID != "" && c.MediaS3.SecretAccessKey != ""
 }
 
 func joinStrings(strs []string, sep string) string {
