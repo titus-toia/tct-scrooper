@@ -26,16 +26,12 @@ type ProxyConfig struct {
 }
 
 type SupabaseConfig struct {
-	URL        string
-	AnonKey    string
-	ServiceKey string
-	DBURL      string
+	DBURL string // Direct Postgres connection string
 }
 
 type SchedulerConfig struct {
-	Interval     time.Duration
-	Cron         string
-	SyncInterval time.Duration
+	Interval time.Duration
+	Cron     string
 }
 
 type ScraperConfig struct {
@@ -71,10 +67,7 @@ func Load() (*Config, error) {
 			URL: os.Getenv("PROXY_URL"),
 		},
 		Supabase: SupabaseConfig{
-			URL:        os.Getenv("SUPABASE_URL"),
-			AnonKey:    os.Getenv("SUPABASE_ANON_KEY"),
-			ServiceKey: os.Getenv("SUPABASE_SERVICE_KEY"),
-			DBURL:      os.Getenv("SUPABASE_DB_URL"),
+			DBURL: os.Getenv("SUPABASE_DB_URL"),
 		},
 		Scheduler: SchedulerConfig{
 			Cron: os.Getenv("SCRAPE_CRON"),
@@ -91,14 +84,6 @@ func Load() (*Config, error) {
 		d, err := time.ParseDuration(interval)
 		if err == nil {
 			cfg.Scheduler.Interval = d
-		}
-	}
-
-	cfg.Scheduler.SyncInterval = 180 * time.Second
-	if interval := os.Getenv("SYNC_INTERVAL"); interval != "" {
-		d, err := time.ParseDuration(interval)
-		if err == nil {
-			cfg.Scheduler.SyncInterval = d
 		}
 	}
 
@@ -123,11 +108,6 @@ func (c *Config) validate() error {
 	// Supabase DB URL is required for domain data (Postgres)
 	if c.Supabase.DBURL == "" {
 		missing = append(missing, "SUPABASE_DB_URL (required for Postgres)")
-	}
-
-	// Legacy REST API: if URL set, service key required
-	if c.Supabase.URL != "" && c.Supabase.ServiceKey == "" {
-		missing = append(missing, "SUPABASE_SERVICE_KEY (required when SUPABASE_URL is set)")
 	}
 
 	// Check for Apify key if any site uses apify handler

@@ -75,15 +75,8 @@ func main() {
 	defer sqliteStore.Close()
 	log.Printf("SQLite database: %s", cfg.DBPath)
 
-	// Legacy Supabase REST client (for backwards compatibility during transition)
-	var supabase *storage.SupabaseStore
-	if cfg.Supabase.URL != "" && cfg.Supabase.ServiceKey != "" {
-		supabase = storage.NewSupabaseStore(&cfg.Supabase)
-		log.Println("Legacy Supabase REST sync enabled")
-	}
-
-	// Create orchestrator with new services
-	orchestrator := scraper.NewOrchestrator(cfg, sqliteStore, supabase)
+	// Create orchestrator
+	orchestrator := scraper.NewOrchestrator(cfg, sqliteStore)
 	orchestrator.SetServices(pgStore, listingService, matchService, mediaService, healthcheckService)
 
 	// Handle one-shot commands

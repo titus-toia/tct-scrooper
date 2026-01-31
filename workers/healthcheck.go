@@ -2,15 +2,20 @@ package workers
 
 import (
 	"context"
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"tct_scrooper/models"
 	"tct_scrooper/storage"
 )
 
-// HealthcheckWorker checks if active listings are still live
+// HealthcheckWorker checks if active listings are still live and monitors price changes
 type HealthcheckWorker struct {
 	store      *storage.PostgresStore
 	httpClient *http.Client
@@ -19,9 +24,8 @@ type HealthcheckWorker struct {
 
 // NewHealthcheckWorker creates a new healthcheck worker
 func NewHealthcheckWorker(store *storage.PostgresStore, proxyURL string) *HealthcheckWorker {
-	// Create client that doesn't follow redirects
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: 30 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse // Don't follow redirects
 		},
@@ -38,20 +42,21 @@ func NewHealthcheckWorker(store *storage.PostgresStore, proxyURL string) *Health
 
 // CheckResult contains the outcome of checking a listing
 type CheckResult struct {
-	IsLive     bool
-	StatusCode int
-	Error      error
+	IsLive       bool
+	StatusCode   int
+	CurrentPrice *float64 // Price extracted from page (nil if not found)
+	Error        error
 }
 
-// Check fetches a listing URL and determines if it's still active
+// Check fetches a listing URL and determines if it's still active, also extracts current price
 func (w *HealthcheckWorker) Check(ctx context.Context, url string) CheckResult {
-	req, err := http.NewRequestWithContext(ctx, "HEAD", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return CheckResult{Error: err}
 	}
 
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-	req.Header.Set("Accept", "text/html")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
 
 	resp, err := w.httpClient.Do(req)
 	if err != nil {
@@ -61,33 +66,81 @@ func (w *HealthcheckWorker) Check(ctx context.Context, url string) CheckResult {
 
 	result := CheckResult{StatusCode: resp.StatusCode}
 
-	// 200 = still active
+	// 200 = still active, parse for price
 	// 404, 410 = delisted
 	// 301, 302 to different path = likely delisted
 	switch resp.StatusCode {
 	case 200:
 		result.IsLive = true
+		// Read body and extract price
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 500*1024)) // 500KB limit
+		if err == nil {
+			result.CurrentPrice = extractPrice(string(body))
+		}
 	case 404, 410:
 		result.IsLive = false
 	case 301, 302:
-		// Check if redirect goes to a "not found" or search page
 		location := resp.Header.Get("Location")
 		if isDelistRedirect(location) {
 			result.IsLive = false
 		} else {
-			result.IsLive = true // Might just be URL normalization
+			result.IsLive = true
 		}
 	default:
-		// For other codes (500, 503, etc.), assume still live but log
+		// For other codes (500, 503, etc.), assume still live but don't update price
 		result.IsLive = true
 	}
 
 	return result
 }
 
+// extractPrice extracts price from HTML page using JSON-LD structured data
+func extractPrice(html string) *float64 {
+	// Try JSON-LD first (most reliable)
+	// Look for: "price": "564900.00"
+	jsonLDPattern := regexp.MustCompile(`"price"\s*:\s*"(\d+(?:\.\d+)?)"`)
+	if matches := jsonLDPattern.FindStringSubmatch(html); len(matches) > 1 {
+		if price, err := strconv.ParseFloat(matches[1], 64); err == nil {
+			return &price
+		}
+	}
+
+	// Fallback: try to find price in JavaScript variable
+	// Look for: price: '564900.00',
+	jsPattern := regexp.MustCompile(`price:\s*'(\d+(?:\.\d+)?)'`)
+	if matches := jsPattern.FindStringSubmatch(html); len(matches) > 1 {
+		if price, err := strconv.ParseFloat(matches[1], 64); err == nil {
+			return &price
+		}
+	}
+
+	// Fallback: try data-value attribute
+	// Look for: data-value-cad="$564,900 "
+	dataPattern := regexp.MustCompile(`data-value-cad="\$?([\d,]+)`)
+	if matches := dataPattern.FindStringSubmatch(html); len(matches) > 1 {
+		priceStr := strings.ReplaceAll(matches[1], ",", "")
+		if price, err := strconv.ParseFloat(priceStr, 64); err == nil {
+			return &price
+		}
+	}
+
+	return nil
+}
+
+// extractJSONLD extracts and parses JSON-LD data from HTML (for future use)
+func extractJSONLD(html string) map[string]interface{} {
+	pattern := regexp.MustCompile(`<script[^>]*type="application/ld\+json"[^>]*>([\s\S]*?)</script>`)
+	if matches := pattern.FindStringSubmatch(html); len(matches) > 1 {
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(matches[1]), &data); err == nil {
+			return data
+		}
+	}
+	return nil
+}
+
 // isDelistRedirect checks if a redirect URL indicates delisting
 func isDelistRedirect(location string) bool {
-	// Common patterns for delisted redirects on realtor.ca
 	delistPatterns := []string{
 		"/map",
 		"/search",
@@ -97,20 +150,7 @@ func isDelistRedirect(location string) bool {
 	}
 
 	for _, pattern := range delistPatterns {
-		if contains(location, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsAt(s, substr, 0))
-}
-
-func containsAt(s, substr string, start int) bool {
-	for i := start; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
+		if strings.Contains(strings.ToLower(location), strings.ToLower(pattern)) {
 			return true
 		}
 	}
@@ -146,7 +186,7 @@ func (w *HealthcheckWorker) processBatch(ctx context.Context, staleDuration time
 
 	log.Printf("Healthcheck: checking %d stale listings", len(listings))
 
-	var checked, delisted int
+	var checked, delisted, priceChanges int
 	for _, listing := range listings {
 		if listing.URL == "" {
 			continue
@@ -157,7 +197,6 @@ func (w *HealthcheckWorker) processBatch(ctx context.Context, staleDuration time
 
 		if result.Error != nil {
 			log.Printf("Healthcheck: error checking %s: %v", listing.URL, result.Error)
-			// Update last_seen anyway to avoid re-checking immediately
 			w.touchListing(ctx, &listing)
 			continue
 		}
@@ -170,7 +209,17 @@ func (w *HealthcheckWorker) processBatch(ctx context.Context, staleDuration time
 				delisted++
 			}
 		} else {
-			// Still live, update last_seen
+			// Check for price change
+			if result.CurrentPrice != nil && listing.Price != nil {
+				if *result.CurrentPrice != *listing.Price {
+					log.Printf("Healthcheck: price change %s: $%.0f -> $%.0f", listing.URL, *listing.Price, *result.CurrentPrice)
+					if err := w.recordPriceChange(ctx, &listing, *result.CurrentPrice); err != nil {
+						log.Printf("Healthcheck: failed to record price change: %v", err)
+					} else {
+						priceChanges++
+					}
+				}
+			}
 			w.touchListing(ctx, &listing)
 		}
 
@@ -178,8 +227,8 @@ func (w *HealthcheckWorker) processBatch(ctx context.Context, staleDuration time
 		time.Sleep(500 * time.Millisecond)
 	}
 
-	if delisted > 0 {
-		log.Printf("Healthcheck: checked %d, marked %d as delisted", checked, delisted)
+	if delisted > 0 || priceChanges > 0 {
+		log.Printf("Healthcheck: checked %d, delisted %d, price changes %d", checked, delisted, priceChanges)
 	}
 }
 
@@ -187,6 +236,50 @@ func (w *HealthcheckWorker) touchListing(ctx context.Context, listing *models.Li
 	now := time.Now()
 	query := `UPDATE listings SET last_seen = $2, updated_at = $2 WHERE id = $1`
 	w.store.Pool().Exec(ctx, query, listing.ID, now)
+}
+
+func (w *HealthcheckWorker) recordPriceChange(ctx context.Context, listing *models.Listing, newPrice float64) error {
+	now := time.Now()
+	previousPrice := listing.Price
+
+	// Update listing price
+	query := `UPDATE listings SET price = $2, updated_at = $3, last_seen = $3 WHERE id = $1`
+	if _, err := w.store.Pool().Exec(ctx, query, listing.ID, newPrice, now); err != nil {
+		return err
+	}
+
+	// Create price_change event
+	event := &models.PropertyEvent{
+		PropertyID:    listing.PropertyID,
+		EventType:     models.EventTypePriceChange,
+		EventDate:     now,
+		Price:         &newPrice,
+		PreviousPrice: previousPrice,
+		SourceType:    "listing",
+		Source:        "healthcheck",
+		CreatedAt:     now,
+	}
+	if err := w.store.CreatePropertyEvent(ctx, event); err != nil {
+		log.Printf("Healthcheck: failed to create price_change event: %v", err)
+	}
+
+	// Create price point
+	pricePoint := &models.PricePoint{
+		PropertyID:  listing.PropertyID,
+		ListingID:   &listing.ID,
+		PriceType:   models.PriceTypeAskingSale,
+		Amount:      newPrice,
+		Currency:    "CAD",
+		Period:      "one_time",
+		EffectiveAt: now,
+		Source:      "healthcheck",
+		CreatedAt:   now,
+	}
+	if err := w.store.CreatePricePoint(ctx, pricePoint); err != nil {
+		log.Printf("Healthcheck: failed to create price_point: %v", err)
+	}
+
+	return nil
 }
 
 func (w *HealthcheckWorker) markDelisted(ctx context.Context, listing *models.Listing) error {

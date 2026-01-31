@@ -40,7 +40,6 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	go s.pollCommands(ctx)
 	go s.pollResumes(ctx)
 	go s.pollHealthcheck(ctx)
-	go s.pollSync(ctx)
 
 	if s.cfg.Scheduler.Cron != "" {
 		log.Printf("Starting scheduler with cron: %s", s.cfg.Scheduler.Cron)
@@ -209,23 +208,3 @@ func (s *Scheduler) pollHealthcheck(ctx context.Context) {
 	}
 }
 
-func (s *Scheduler) pollSync(ctx context.Context) {
-	if s.cfg.Scheduler.SyncInterval <= 0 {
-		return
-	}
-	ticker := time.NewTicker(s.cfg.Scheduler.SyncInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ticker.C:
-			if err := s.orchestrator.SyncToSupabase(ctx); err != nil {
-				log.Printf("Periodic sync error: %v", err)
-			}
-		case <-s.stopCh:
-			return
-		case <-ctx.Done():
-			return
-		}
-	}
-}

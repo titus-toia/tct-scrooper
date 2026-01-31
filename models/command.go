@@ -12,7 +12,6 @@ const (
 	CmdScrapeSite CommandType = "scrape_site"
 	CmdPause      CommandType = "pause"
 	CmdResume     CommandType = "resume"
-	CmdSyncNow    CommandType = "sync_now"
 )
 
 type Command struct {

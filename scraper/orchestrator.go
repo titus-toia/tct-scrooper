@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"tct_scrooper/config"
-	"tct_scrooper/identity"
 	"tct_scrooper/models"
 	"tct_scrooper/services"
 	"tct_scrooper/storage"
@@ -17,11 +16,10 @@ import (
 type Orchestrator struct {
 	cfg      *config.Config
 	store    *storage.SQLiteStore
-	supabase *storage.SupabaseStore
 	handlers map[string]Handler
 	paused   bool
 
-	// New services (direct Postgres)
+	// Postgres services
 	pgStore            *storage.PostgresStore
 	listingService     *services.ListingService
 	matchService       *services.MatchService
@@ -29,7 +27,7 @@ type Orchestrator struct {
 	healthcheckService *services.HealthcheckService
 }
 
-func NewOrchestrator(cfg *config.Config, store *storage.SQLiteStore, supabase *storage.SupabaseStore) *Orchestrator {
+func NewOrchestrator(cfg *config.Config, store *storage.SQLiteStore) *Orchestrator {
 	handlers := make(map[string]Handler)
 	for id, siteCfg := range cfg.Sites {
 		handler := NewHandler(siteCfg)
@@ -45,7 +43,6 @@ func NewOrchestrator(cfg *config.Config, store *storage.SQLiteStore, supabase *s
 	return &Orchestrator{
 		cfg:      cfg,
 		store:    store,
-		supabase: supabase,
 		handlers: handlers,
 	}
 }
@@ -74,13 +71,6 @@ func (o *Orchestrator) RunAll(ctx context.Context) error {
 	for siteID := range o.cfg.Sites {
 		if err := o.RunSite(ctx, siteID); err != nil {
 			log.Printf("Error running site %s: %v", siteID, err)
-		}
-	}
-
-	// Legacy sync (if configured) - can be removed after full migration
-	if o.supabase != nil && o.pgStore == nil {
-		if err := o.SyncToSupabase(ctx); err != nil {
-			log.Printf("Error syncing to Supabase: %v", err)
 		}
 	}
 
@@ -188,185 +178,26 @@ func (o *Orchestrator) RunSite(ctx context.Context, siteID string) error {
 }
 
 func (o *Orchestrator) processListing(ctx context.Context, run *models.ScrapeRun, listing *models.RawListing, siteID string, pgRunID *int64, stats *services.ProcessStats) error {
-	// Use new ListingService if available (direct Postgres writes)
-	if o.listingService != nil {
-		result, err := o.listingService.ProcessListing(ctx, listing, siteID, pgRunID)
-		if err != nil {
-			return err
-		}
-		stats.Aggregate(result)
-
-		// Update SQLite stats for backwards compatibility
-		if result.IsNewProperty {
-			run.PropertiesNew++
-		}
-		if result.IsRelisted {
-			run.PropertiesRelisted++
-		}
-		if result.IsNewListing {
-			run.ListingsNew++
-		}
-		return nil
+	if o.listingService == nil {
+		return fmt.Errorf("listing service not initialized")
 	}
 
-	// Legacy path: SQLite + Supabase sync
-	return o.processListingLegacy(ctx, run, listing, siteID)
-}
-
-// processListingLegacy is the old SQLite-based processing (for backwards compatibility)
-func (o *Orchestrator) processListingLegacy(ctx context.Context, run *models.ScrapeRun, listing *models.RawListing, siteID string) error {
-	fingerprint := identity.Fingerprint(listing)
-	now := time.Now()
-
-	// Check last snapshot for this MLS - skip snapshot if price unchanged
-	lastSnap, _ := o.store.GetLastSnapshotByMLS(listing.MLS)
-	if lastSnap != nil && lastSnap.Price == listing.Price {
-		// Still update last_seen to show property is active
-		o.store.TouchProperty(fingerprint, now)
-		return nil
-	}
-
-	existing, err := o.store.GetProperty(fingerprint)
+	result, err := o.listingService.ProcessListing(ctx, listing, siteID, pgRunID)
 	if err != nil {
 		return err
 	}
+	stats.Aggregate(result)
 
-	if existing == nil {
-		prop := &models.Property{
-			ID:                fingerprint,
-			NormalizedAddress: identity.NormalizeAddress(listing.Address),
-			City:              listing.City,
-			PostalCode:        listing.PostalCode,
-			Beds:              listing.Beds,
-			BedsPlus:          listing.BedsPlus,
-			Baths:             listing.Baths,
-			SqFt:              listing.SqFt,
-			PropertyType:      listing.PropertyType,
-			FirstSeenAt:       now,
-			LastSeenAt:        now,
-			TimesListed:       1,
-			Synced:            false,
-		}
-
-		if err := o.store.UpsertProperty(prop); err != nil {
-			return err
-		}
-		if matches, err := o.store.InsertPotentialMatches(prop); err != nil {
-			o.log(run.ID, models.LogLevelWarn, fmt.Sprintf("Property match insert failed for %s: %v", prop.ID, err), siteID)
-		} else if matches > 0 {
-			o.log(run.ID, models.LogLevelInfo, fmt.Sprintf("Property match candidates for %s: %d", prop.ID, matches), siteID)
-		}
+	// Update SQLite stats for TUI compatibility
+	if result.IsNewProperty {
 		run.PropertiesNew++
-	} else {
-		lastSnap, err := o.store.GetLastSnapshotForProperty(fingerprint)
-		if err != nil {
-			return err
-		}
-
-		if lastSnap != nil && lastSnap.ListingID != listing.MLS {
-			existing.TimesListed++
-			run.PropertiesRelisted++
-		}
-
-		existing.LastSeenAt = now
-		existing.PostalCode = listing.PostalCode
-		existing.Synced = false
-		if err := o.store.UpsertProperty(existing); err != nil {
-			return err
-		}
 	}
-
-	var realtorJSON json.RawMessage
-	if listing.Realtor != nil {
-		realtorJSON, _ = json.Marshal(listing.Realtor)
+	if result.IsRelisted {
+		run.PropertiesRelisted++
 	}
-
-	// Embed extracted photos into Data for Supabase sync
-	dataWithPhotos := listing.Data
-	if len(listing.Photos) > 0 {
-		var dataMap map[string]interface{}
-		if listing.Data != nil {
-			json.Unmarshal(listing.Data, &dataMap)
-		}
-		if dataMap == nil {
-			dataMap = make(map[string]interface{})
-		}
-		dataMap["photos"] = listing.Photos
-		dataWithPhotos, _ = json.Marshal(dataMap)
+	if result.IsNewListing {
+		run.ListingsNew++
 	}
-
-	snap := &models.Snapshot{
-		PropertyID:  fingerprint,
-		ListingID:   listing.MLS,
-		SiteID:      siteID,
-		URL:         listing.URL,
-		Price:       listing.Price,
-		Description: listing.Description,
-		Realtor:     realtorJSON,
-		Data:        dataWithPhotos,
-		ScrapedAt:   now,
-		RunID:       run.ID,
-	}
-
-	if err := o.store.CreateSnapshot(snap); err != nil {
-		return err
-	}
-
-	run.ListingsNew++
-	return nil
-}
-
-func (o *Orchestrator) SyncToSupabase(ctx context.Context) error {
-	if o.supabase == nil {
-		return nil
-	}
-
-	props, err := o.store.GetUnsyncedProperties()
-	if err != nil {
-		return err
-	}
-
-	if len(props) == 0 {
-		log.Println("Supabase: no properties to sync")
-		return nil
-	}
-
-	log.Printf("Syncing %d properties to Supabase...", len(props))
-
-	var synced, errors int
-	for _, prop := range props {
-		snapshots, err := o.store.GetSnapshotsForProperty(prop.ID)
-		if err != nil {
-			log.Printf("Error getting snapshots for %s: %v", prop.ID, err)
-			errors++
-			continue
-		}
-
-		if len(snapshots) == 0 {
-			continue
-		}
-
-		siteID := snapshots[0].SiteID
-		sbProp, err := storage.BuildSupabaseProperty(&prop, snapshots, siteID)
-		if err != nil {
-			log.Printf("Error building Supabase property for %s: %v", prop.ID, err)
-			errors++
-			continue
-		}
-
-		if err := o.supabase.UpsertProperty(sbProp); err != nil {
-			log.Printf("Error upserting to Supabase for %s: %v", prop.ID, err)
-			errors++
-			continue
-		}
-
-		if err := o.store.MarkPropertySynced(prop.ID); err != nil {
-			log.Printf("Error marking synced for %s: %v", prop.ID, err)
-		}
-		synced++
-	}
-
-	log.Printf("Sync complete: %d synced, %d errors", synced, errors)
 	return nil
 }
 
@@ -392,8 +223,6 @@ func (o *Orchestrator) HandleCommand(cmd *models.Command) error {
 	case models.CmdResume:
 		o.paused = false
 		log.Println("Scraper resumed")
-	case models.CmdSyncNow:
-		return o.SyncToSupabase(ctx)
 	}
 
 	return nil

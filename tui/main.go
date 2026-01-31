@@ -86,11 +86,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.notification = "Scrape command sent!"
 				m.notifyUntil = time.Now().Add(2 * time.Second)
 			}
-		case "y":
-			if err := m.db.SyncNow(); err == nil {
-				m.notification = "Sync command sent!"
-				m.notifyUntil = time.Now().Add(2 * time.Second)
-			}
 		case "c":
 			if url := m.data.GetSelectedURL(); url != "" {
 				m.notification = "URL copied!"
@@ -191,7 +186,7 @@ func (m model) renderContent() string {
 }
 
 func (m model) renderStatusBar() string {
-	left := "d Dashboard  p Data  l Logs  r Refresh  s Scrape  y Sync  c Copy  q Quit"
+	left := "d Dashboard  p Data  l Logs  r Refresh  s Scrape  c Copy  q Quit"
 	right := ""
 	if time.Now().Before(m.notifyUntil) {
 		right = styles.Notification.Render(m.notification)

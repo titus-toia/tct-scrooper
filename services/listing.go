@@ -159,7 +159,7 @@ func (s *ListingService) ProcessListing(ctx context.Context, raw *models.RawList
 		result.ListingID = listing.ID
 		previousPrice = listing.Price
 
-		// Update listing
+		// Update listing (if was delisted, quietly restore - probably false positive)
 		listing.URL = raw.URL
 		listing.Status = models.ListingStatusActive
 		listing.Price = float64Ptr(float64(raw.Price))

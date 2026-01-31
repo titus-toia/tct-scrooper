@@ -423,12 +423,6 @@ func (c *Client) ScrapeNow() error {
 	return c.SendCommand("scrape_now", nil)
 }
 
-func (c *Client) SyncNow() error {
-	// Sync is no longer needed with direct Postgres writes
-	// But keep the command for backwards compatibility
-	return c.SendCommand("sync_now", nil)
-}
-
 func deref(s *string) string {
 	if s == nil {
 		return ""
