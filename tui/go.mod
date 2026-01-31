@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/jackc/pgx/v5 v5.7.2
+	github.com/joho/godotenv v1.5.1
 	modernc.org/sqlite v1.44.3
 )
 

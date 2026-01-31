@@ -11,6 +11,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/joho/godotenv"
 )
 
 type tab int
@@ -201,6 +202,8 @@ func (m model) renderStatusBar() string {
 }
 
 func main() {
+	_ = godotenv.Load() // Load .env if present
+
 	postgresURL := os.Getenv("SUPABASE_DB_URL")
 	if postgresURL == "" {
 		fmt.Fprintf(os.Stderr, "Error: SUPABASE_DB_URL environment variable is required\n")
