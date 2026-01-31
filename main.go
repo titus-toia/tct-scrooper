@@ -12,6 +12,7 @@ import (
 	"tct_scrooper/config"
 	"tct_scrooper/httputil"
 	"tct_scrooper/logging"
+	"tct_scrooper/models"
 	"tct_scrooper/scheduler"
 	"tct_scrooper/scraper"
 	"tct_scrooper/services"
@@ -60,13 +61,26 @@ func main() {
 	defer pgStore.Close()
 	log.Printf("Connected to Postgres: %s", maskConnectionString(cfg.Supabase.DBURL))
 
+	// Initialize SQLite for operational data (TUI commands, legacy support)
+	sqliteStore, err := storage.NewSQLiteStore(cfg.DBPath)
+	if err != nil {
+		log.Fatalf("Failed to open SQLite: %v", err)
+	}
+	defer sqliteStore.Close()
+	log.Printf("SQLite database: %s", cfg.DBPath)
+
 	// Handle reset command
 	if *resetData {
-		log.Println("Resetting all domain data...")
+		log.Println("Resetting all data...")
 		if err := pgStore.ResetAllData(ctx); err != nil {
-			log.Fatalf("Reset failed: %v", err)
+			log.Fatalf("Postgres reset failed: %v", err)
 		}
-		log.Println("All domain data has been nuked!")
+		log.Println("Postgres tables cleared")
+		if err := sqliteStore.ResetAllData(); err != nil {
+			log.Fatalf("SQLite reset failed: %v", err)
+		}
+		log.Println("SQLite tables cleared")
+		log.Println("All data has been nuked!")
 		return
 	}
 
@@ -77,14 +91,6 @@ func main() {
 	healthcheckService := services.NewHealthcheckService(pgStore, listingService)
 
 	log.Println("Services initialized")
-
-	// Initialize SQLite for operational data (TUI commands, legacy support)
-	sqliteStore, err := storage.NewSQLiteStore(cfg.DBPath)
-	if err != nil {
-		log.Fatalf("Failed to open SQLite: %v", err)
-	}
-	defer sqliteStore.Close()
-	log.Printf("SQLite database: %s", cfg.DBPath)
 
 	// Create orchestrator
 	orchestrator := scraper.NewOrchestrator(cfg, sqliteStore)
@@ -109,13 +115,20 @@ func main() {
 		log.Fatalf("Failed to start scheduler: %v", err)
 	}
 
+	// Create worker logger that writes to SQLite
+	workerLog := func(level models.LogLevel, source, message string) {
+		sqliteStore.Log(nil, level, message, source)
+	}
+
 	// Start background workers
 	enrichmentWorker := workers.NewEnrichmentWorker(pgStore, mediaService, cfg.Proxy.URL)
+	enrichmentWorker.SetLogger(workerLog)
 	go enrichmentWorker.Run(ctx, 25, 5*time.Minute) // batch of 25 every 5 min
 	log.Println("Enrichment worker started")
 
 	healthcheckWorker := workers.NewHealthcheckWorker(pgStore, cfg.Proxy.URL)
-	go healthcheckWorker.Run(ctx, 1*time.Hour, 50, 5*time.Minute) // check listings older than 1h, batch 50, every 5 min
+	healthcheckWorker.SetLogger(workerLog)
+	go healthcheckWorker.Run(ctx, 24*time.Hour, 50, 5*time.Minute) // check listings older than 24h, batch 50, every 5 min
 	log.Println("Healthcheck worker started")
 
 	// Media worker
@@ -138,8 +151,12 @@ func main() {
 		log.Println("S3 not configured - media worker will skip uploads")
 	}
 	mediaWorker := workers.NewMediaWorker(pgStore, mediaUploader, cfg.Proxy.URL)
+	mediaWorker.SetLogger(workerLog)
 	go mediaWorker.Run(ctx, 20, 2*time.Minute) // batch of 20 every 2 min
 	log.Println("Media worker started")
+
+	// Register workers with scheduler for manual triggering
+	sched.SetWorkers(mediaWorker, enrichmentWorker, healthcheckWorker)
 
 	log.Println("Daemon running. Press Ctrl+C to stop.")
 

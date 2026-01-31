@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "modernc.org/sqlite"
 )
@@ -295,6 +294,15 @@ func (c *Client) GetPendingMediaCount() (int, error) {
 	return count, err
 }
 
+func (c *Client) GetPendingEnrichmentCount() (int, error) {
+	var count int
+	err := c.pg.QueryRow(c.ctx, `
+		SELECT COUNT(*) FROM listings
+		WHERE status = 'active' AND features IS NULL AND enrichment_attempts < 3
+	`).Scan(&count)
+	return count, err
+}
+
 func (c *Client) GetCityStats() ([]CityStats, error) {
 	rows, err := c.pg.Query(c.ctx, `
 		SELECT
@@ -422,23 +430,23 @@ func (c *Client) GetPriceHistory(propertyID string) ([]PricePoint, error) {
 }
 
 func (c *Client) GetRecentLogs(limit int, level *string) ([]ScrapeLog, error) {
-	var rows pgx.Rows
+	var rows *sql.Rows
 	var err error
 
 	if level != nil && *level != "ALL" {
-		rows, err = c.pg.Query(c.ctx, `
-			SELECT id, run_id, timestamp, level, message, source_id
+		rows, err = c.sqlite.Query(`
+			SELECT id, run_id, timestamp, level, message, site_id
 			FROM scrape_logs
-			WHERE level = $1
+			WHERE UPPER(level) = UPPER(?)
 			ORDER BY timestamp DESC
-			LIMIT $2
+			LIMIT ?
 		`, *level, limit)
 	} else {
-		rows, err = c.pg.Query(c.ctx, `
-			SELECT id, run_id, timestamp, level, message, source_id
+		rows, err = c.sqlite.Query(`
+			SELECT id, run_id, timestamp, level, message, site_id
 			FROM scrape_logs
 			ORDER BY timestamp DESC
-			LIMIT $1
+			LIMIT ?
 		`, limit)
 	}
 	if err != nil {
@@ -449,10 +457,12 @@ func (c *Client) GetRecentLogs(limit int, level *string) ([]ScrapeLog, error) {
 	var logs []ScrapeLog
 	for rows.Next() {
 		var l ScrapeLog
-		err := rows.Scan(&l.ID, &l.RunID, &l.Timestamp, &l.Level, &l.Message, &l.SourceID)
+		var ts string
+		err := rows.Scan(&l.ID, &l.RunID, &ts, &l.Level, &l.Message, &l.SourceID)
 		if err != nil {
 			return nil, err
 		}
+		l.Timestamp, _ = time.Parse(time.RFC3339Nano, ts)
 		logs = append(logs, l)
 	}
 	return logs, nil
@@ -469,6 +479,18 @@ func (c *Client) SendCommand(command string, params map[string]interface{}) erro
 
 func (c *Client) ScrapeNow() error {
 	return c.SendCommand("scrape_now", nil)
+}
+
+func (c *Client) RunMedia() error {
+	return c.SendCommand("run_media", nil)
+}
+
+func (c *Client) RunEnrichment() error {
+	return c.SendCommand("run_enrichment", nil)
+}
+
+func (c *Client) RunHealthcheck() error {
+	return c.SendCommand("run_healthcheck", nil)
 }
 
 func deref(s *string) string {

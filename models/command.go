@@ -8,10 +8,13 @@ import (
 type CommandType string
 
 const (
-	CmdScrapeNow  CommandType = "scrape_now"
-	CmdScrapeSite CommandType = "scrape_site"
-	CmdPause      CommandType = "pause"
-	CmdResume     CommandType = "resume"
+	CmdScrapeNow      CommandType = "scrape_now"
+	CmdScrapeSite     CommandType = "scrape_site"
+	CmdPause          CommandType = "pause"
+	CmdResume         CommandType = "resume"
+	CmdRunMedia       CommandType = "run_media"
+	CmdRunEnrichment  CommandType = "run_enrichment"
+	CmdRunHealthcheck CommandType = "run_healthcheck"
 )
 
 type Command struct {

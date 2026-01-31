@@ -25,6 +25,12 @@ type MediaWorker struct {
 	httpClient *http.Client
 	uploader   S3Uploader
 	proxyURL   string
+	triggerCh  chan struct{}
+	logFunc    LogFunc
+}
+
+func (w *MediaWorker) SetLogger(fn LogFunc) {
+	w.logFunc = fn
 }
 
 // S3Uploader interface for uploading to S3-compatible storage
@@ -53,6 +59,16 @@ func NewMediaWorker(store *storage.PostgresStore, uploader S3Uploader, proxyURL 
 		httpClient: client,
 		uploader:   uploader,
 		proxyURL:   proxyURL,
+		triggerCh:  make(chan struct{}, 1),
+		logFunc:    NoOpLogger,
+	}
+}
+
+// Trigger causes the worker to run immediately
+func (w *MediaWorker) Trigger() {
+	select {
+	case w.triggerCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -247,6 +263,9 @@ func (w *MediaWorker) Run(ctx context.Context, batchSize int, interval time.Dura
 			return
 		case <-ticker.C:
 			w.processBatch(ctx, batchSize)
+		case <-w.triggerCh:
+			log.Println("Media worker triggered manually")
+			w.processBatch(ctx, batchSize)
 		}
 	}
 }
@@ -284,8 +303,8 @@ func (w *MediaWorker) processBatch(ctx context.Context, batchSize int) {
 		}
 
 		if result.IsDuplicate {
-			// Content already in S3 from another URL - mark as duplicate (no s3_key to avoid unique constraint)
-			if err := w.store.UpdateMediaStatus(ctx, m.ID, "duplicate", nil, result.ContentHash, m.Attempts); err != nil {
+			// Content already in S3 from another URL - copy the s3_key so consumers can find it
+			if err := w.store.UpdateMediaStatus(ctx, m.ID, "duplicate", &result.S3Key, result.ContentHash, m.Attempts); err != nil {
 				log.Printf("Media worker: failed to mark duplicate %s: %v", m.ID, err)
 			}
 			processed++
@@ -308,6 +327,11 @@ func (w *MediaWorker) processBatch(ctx context.Context, batchSize int) {
 
 	if processed > 0 || failed > 0 {
 		log.Printf("Media worker: processed %d, failed %d", processed, failed)
+		msg := fmt.Sprintf("Batch done: %d uploaded", processed)
+		if failed > 0 {
+			msg += fmt.Sprintf(", %d failed", failed)
+		}
+		w.logFunc(models.LogLevelInfo, "media", msg)
 	}
 }
 

@@ -1,7 +1,7 @@
 id: realtor_ca
 name: Realtor.ca
 handler: apify
-apify_actor: scrapemind
+apify_actor: canadesk
 apify_max_listings: 600
 rate_limit_ms: 500
 endpoints:

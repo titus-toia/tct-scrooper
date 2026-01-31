@@ -155,17 +155,17 @@ func (l Logs) renderLogs() string {
 
 func (l Logs) formatLog(log db.ScrapeLog) string {
 	ts := log.Timestamp.Format("15:04:05")
-	level := fmt.Sprintf("%-5s", log.Level)
+	level := fmt.Sprintf("%-5s", strings.ToUpper(log.Level))
 
 	var levelStyle lipgloss.Style
-	switch log.Level {
-	case "DEBUG":
+	switch strings.ToLower(log.Level) {
+	case "debug":
 		levelStyle = styles.Muted
-	case "INFO":
+	case "info":
 		levelStyle = styles.StatusSuccess
-	case "WARN":
+	case "warn", "warning":
 		levelStyle = styles.StatusPending
-	case "ERROR", "FATAL":
+	case "error", "fatal":
 		levelStyle = styles.StatusError
 	default:
 		levelStyle = lipgloss.NewStyle()

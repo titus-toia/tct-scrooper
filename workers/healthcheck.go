@@ -3,10 +3,12 @@ package workers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,9 +20,16 @@ import (
 
 // HealthcheckWorker checks if active listings are still live and monitors price changes
 type HealthcheckWorker struct {
-	store      *storage.PostgresStore
-	httpClient *http.Client
-	proxyURL   string
+	store          *storage.PostgresStore
+	httpClient     *http.Client
+	proxyURL       string
+	scrapingBeeKey string
+	triggerCh      chan struct{}
+	logFunc        LogFunc
+}
+
+func (w *HealthcheckWorker) SetLogger(fn LogFunc) {
+	w.logFunc = fn
 }
 
 // NewHealthcheckWorker creates a new healthcheck worker
@@ -42,10 +51,28 @@ func NewHealthcheckWorker(store *storage.PostgresStore, proxyURL string) *Health
 		},
 	}
 
+	sbKey := os.Getenv("SCRAPINGBEE_API_KEY")
+	if sbKey != "" {
+		log.Printf("Healthcheck: ScrapingBee API key loaded (%d chars)", len(sbKey))
+	} else {
+		log.Println("Healthcheck: No ScrapingBee API key, will use proxy only")
+	}
+
 	return &HealthcheckWorker{
-		store:      store,
-		httpClient: client,
-		proxyURL:   proxyURL,
+		store:          store,
+		httpClient:     client,
+		proxyURL:       proxyURL,
+		scrapingBeeKey: sbKey,
+		triggerCh:      make(chan struct{}, 1),
+		logFunc:        NoOpLogger,
+	}
+}
+
+// Trigger causes the worker to run immediately
+func (w *HealthcheckWorker) Trigger() {
+	select {
+	case w.triggerCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -58,8 +85,116 @@ type CheckResult struct {
 }
 
 // Check fetches a listing URL and determines if it's still active, also extracts current price
-func (w *HealthcheckWorker) Check(ctx context.Context, url string) CheckResult {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+func (w *HealthcheckWorker) Check(ctx context.Context, listingURL string) CheckResult {
+	// Try ScrapingBee first if available
+	if w.scrapingBeeKey != "" {
+		result := w.checkWithScrapingBee(ctx, listingURL)
+		if result.Error == nil {
+			return result
+		}
+		log.Printf("Healthcheck: ScrapingBee failed for %s: %v, trying HEAD request", listingURL, result.Error)
+	}
+
+	// Fallback: HEAD request (no body, just check status code)
+	result := w.checkWithHEAD(ctx, listingURL)
+	if result.Error == nil {
+		return result
+	}
+
+	// Last resort: full GET with proxy
+	return w.checkWithProxy(ctx, listingURL)
+}
+
+// checkWithHEAD does a lightweight HEAD request to check if URL is still valid
+func (w *HealthcheckWorker) checkWithHEAD(ctx context.Context, listingURL string) CheckResult {
+	req, err := http.NewRequestWithContext(ctx, "HEAD", listingURL, nil)
+	if err != nil {
+		return CheckResult{Error: err}
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+
+	resp, err := w.httpClient.Do(req)
+	if err != nil {
+		return CheckResult{Error: err}
+	}
+	resp.Body.Close()
+
+	result := CheckResult{StatusCode: resp.StatusCode}
+
+	switch resp.StatusCode {
+	case 200:
+		result.IsLive = true
+		// HEAD can't extract price, but confirms listing exists
+	case 404, 410:
+		result.IsLive = false
+	case 301, 302:
+		location := resp.Header.Get("Location")
+		if isDelistRedirect(location) {
+			result.IsLive = false
+		} else {
+			result.IsLive = true
+		}
+	default:
+		// For other codes, assume still live
+		result.IsLive = true
+	}
+
+	return result
+}
+
+// checkWithScrapingBee uses ScrapingBee API to fetch the page
+func (w *HealthcheckWorker) checkWithScrapingBee(ctx context.Context, listingURL string) CheckResult {
+	params := url.Values{}
+	params.Set("api_key", w.scrapingBeeKey)
+	params.Set("url", listingURL)
+	params.Set("render_js", "false")
+
+	apiURL := "https://app.scrapingbee.com/api/v1/?" + params.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
+	if err != nil {
+		return CheckResult{Error: err}
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return CheckResult{Error: err}
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 500*1024))
+	if err != nil {
+		return CheckResult{Error: err}
+	}
+
+	// ScrapingBee returns 500 with error message for blocked pages
+	if resp.StatusCode >= 400 {
+		// Check if it's a 404 from the target site
+		if strings.Contains(string(body), "404") || strings.Contains(string(body), "not found") {
+			return CheckResult{StatusCode: 404, IsLive: false}
+		}
+		return CheckResult{Error: fmt.Errorf("scrapingbee status %d: %s", resp.StatusCode, string(body[:min(200, len(body))]))}
+	}
+
+	html := string(body)
+
+	// Check for delisted indicators in HTML
+	if isDelistedPage(html) {
+		return CheckResult{StatusCode: 200, IsLive: false}
+	}
+
+	return CheckResult{
+		StatusCode:   200,
+		IsLive:       true,
+		CurrentPrice: extractPrice(html),
+	}
+}
+
+// checkWithProxy uses the configured proxy to fetch the page directly
+func (w *HealthcheckWorker) checkWithProxy(ctx context.Context, listingURL string) CheckResult {
+	req, err := http.NewRequestWithContext(ctx, "GET", listingURL, nil)
 	if err != nil {
 		return CheckResult{Error: err}
 	}
@@ -81,8 +216,7 @@ func (w *HealthcheckWorker) Check(ctx context.Context, url string) CheckResult {
 	switch resp.StatusCode {
 	case 200:
 		result.IsLive = true
-		// Read body and extract price
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 500*1024)) // 500KB limit
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 500*1024))
 		if err == nil {
 			result.CurrentPrice = extractPrice(string(body))
 		}
@@ -96,11 +230,27 @@ func (w *HealthcheckWorker) Check(ctx context.Context, url string) CheckResult {
 			result.IsLive = true
 		}
 	default:
-		// For other codes (500, 503, etc.), assume still live but don't update price
 		result.IsLive = true
 	}
 
 	return result
+}
+
+// isDelistedPage checks HTML content for signs the listing was removed
+func isDelistedPage(html string) bool {
+	delistIndicators := []string{
+		"This listing is no longer available",
+		"listing has been removed",
+		"property is no longer listed",
+		"PropertySearchTypeId", // redirect to search page
+	}
+	htmlLower := strings.ToLower(html)
+	for _, indicator := range delistIndicators {
+		if strings.Contains(htmlLower, strings.ToLower(indicator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // extractPrice extracts price from HTML page using JSON-LD structured data
@@ -178,6 +328,9 @@ func (w *HealthcheckWorker) Run(ctx context.Context, staleDuration time.Duration
 			return
 		case <-ticker.C:
 			w.processBatch(ctx, staleDuration, batchSize)
+		case <-w.triggerCh:
+			log.Println("Healthcheck worker triggered manually")
+			w.processBatch(ctx, staleDuration, batchSize)
 		}
 	}
 }
@@ -238,6 +391,14 @@ func (w *HealthcheckWorker) processBatch(ctx context.Context, staleDuration time
 
 	if delisted > 0 || priceChanges > 0 {
 		log.Printf("Healthcheck: checked %d, delisted %d, price changes %d", checked, delisted, priceChanges)
+		msg := fmt.Sprintf("Checked %d listings", checked)
+		if delisted > 0 {
+			msg += fmt.Sprintf(", %d delisted", delisted)
+		}
+		if priceChanges > 0 {
+			msg += fmt.Sprintf(", %d price changes", priceChanges)
+		}
+		w.logFunc(models.LogLevelInfo, "healthcheck", msg)
 	}
 }
 

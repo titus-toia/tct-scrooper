@@ -87,6 +87,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.notification = "Scrape command sent!"
 				m.notifyUntil = time.Now().Add(2 * time.Second)
 			}
+		case "m":
+			if err := m.db.RunMedia(); err == nil {
+				m.notification = "Media worker triggered!"
+				m.notifyUntil = time.Now().Add(2 * time.Second)
+			}
+		case "e":
+			if err := m.db.RunEnrichment(); err == nil {
+				m.notification = "Enrichment worker triggered!"
+				m.notifyUntil = time.Now().Add(2 * time.Second)
+			}
+		case "h":
+			if err := m.db.RunHealthcheck(); err == nil {
+				m.notification = "Healthcheck worker triggered!"
+				m.notifyUntil = time.Now().Add(2 * time.Second)
+			}
 		case "c":
 			if url := m.data.GetSelectedURL(); url != "" {
 				m.notification = "URL copied!"
@@ -187,7 +202,7 @@ func (m model) renderContent() string {
 }
 
 func (m model) renderStatusBar() string {
-	left := "d Dashboard  p Data  l Logs  r Refresh  s Scrape  c Copy  q Quit"
+	left := "d Dash  p Data  l Log  r Refresh  s Scrape  m Media  e Enrich  h Health  q Quit"
 	right := ""
 	if time.Now().Before(m.notifyUntil) {
 		right = styles.Notification.Render(m.notification)

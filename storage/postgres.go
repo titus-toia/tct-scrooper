@@ -179,7 +179,7 @@ func (s *PostgresStore) UpsertListing(ctx context.Context, l *models.Listing) er
 			raw_data = EXCLUDED.raw_data,
 			last_seen = EXCLUDED.last_seen,
 			delisted_at = EXCLUDED.delisted_at,
-			enrichment_attempts = COALESCE(EXCLUDED.enrichment_attempts, listings.enrichment_attempts),
+			enrichment_attempts = COALESCE(NULLIF(EXCLUDED.enrichment_attempts, 0), listings.enrichment_attempts),
 			updated_at = NOW()
 		RETURNING id`
 

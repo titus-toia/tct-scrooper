@@ -16,13 +16,14 @@ import (
 )
 
 type dashboardDataMsg struct {
-	stats         []db.SiteStats
-	runs          []db.ScrapeRun
-	cityStats     []db.CityStats
-	propCount     int
-	listingCount  int
-	activeCount   int
-	mediaQueue    int
+	stats           []db.SiteStats
+	runs            []db.ScrapeRun
+	cityStats       []db.CityStats
+	propCount       int
+	listingCount    int
+	activeCount     int
+	mediaQueue      int
+	enrichmentQueue int
 }
 
 type logTailMsg struct {
@@ -32,22 +33,23 @@ type logTailMsg struct {
 }
 
 type Dashboard struct {
-	db            *db.Client
-	width, height int
-	stats         []db.SiteStats
-	runs          []db.ScrapeRun
-	cityStats     []db.CityStats
-	propCount     int
-	listingCount  int
-	activeCount   int
-	mediaQueue    int
-	logLines      []string
-	logPath       string
-	logScroll     int       // scroll offset (0 = bottom/newest)
-	logViewport   int       // visible lines
-	logBuffer     int       // total lines to keep
-	logModTime    time.Time // last modification time of log file
-	daemonActive  bool      // whether systemd service is active
+	db              *db.Client
+	width, height   int
+	stats           []db.SiteStats
+	runs            []db.ScrapeRun
+	cityStats       []db.CityStats
+	propCount       int
+	listingCount    int
+	activeCount     int
+	mediaQueue      int
+	enrichmentQueue int
+	logLines        []string
+	logPath         string
+	logScroll       int       // scroll offset (0 = bottom/newest)
+	logViewport     int       // visible lines
+	logBuffer       int       // total lines to keep
+	logModTime      time.Time // last modification time of log file
+	daemonActive    bool      // whether systemd service is active
 }
 
 func NewDashboard(dbClient *db.Client, logPath string) Dashboard {
@@ -75,7 +77,8 @@ func (d Dashboard) Refresh() tea.Cmd {
 		listingCount, _ := d.db.GetListingCount()
 		activeCount, _ := d.db.GetActiveListingCount()
 		mediaQueue, _ := d.db.GetPendingMediaCount()
-		return dashboardDataMsg{stats, runs, cityStats, propCount, listingCount, activeCount, mediaQueue}
+		enrichmentQueue, _ := d.db.GetPendingEnrichmentCount()
+		return dashboardDataMsg{stats, runs, cityStats, propCount, listingCount, activeCount, mediaQueue, enrichmentQueue}
 	}
 }
 
@@ -140,6 +143,7 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d.listingCount = msg.listingCount
 		d.activeCount = msg.activeCount
 		d.mediaQueue = msg.mediaQueue
+		d.enrichmentQueue = msg.enrichmentQueue
 		return d, d.tailLog()
 	case logTailMsg:
 		d.logLines = msg.lines
@@ -286,8 +290,8 @@ func (d Dashboard) renderStatCards() string {
 		d.renderStatCard("Properties", fmt.Sprintf("%d", d.propCount)),
 		d.renderStatCard("Listings", fmt.Sprintf("%d", d.listingCount)),
 		d.renderStatCard("Active", fmt.Sprintf("%d", d.activeCount)),
+		d.renderStatCard("Enrich Q", fmt.Sprintf("%d", d.enrichmentQueue)),
 		d.renderStatCard("Media Q", fmt.Sprintf("%d", d.mediaQueue)),
-		d.renderStatCard("Sites", fmt.Sprintf("%d", len(d.stats))),
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, cards...)
 }

@@ -10,9 +10,15 @@ import (
 	"github.com/robfig/cron/v3"
 	"tct_scrooper/config"
 	"tct_scrooper/httputil"
+	"tct_scrooper/models"
 	"tct_scrooper/scraper"
 	"tct_scrooper/storage"
 )
+
+// Triggerable allows workers to be triggered manually
+type Triggerable interface {
+	Trigger()
+}
 
 type Scheduler struct {
 	cfg          *config.Config
@@ -22,6 +28,10 @@ type Scheduler struct {
 	cron         *cron.Cron
 	ticker       *time.Ticker
 	stopCh       chan struct{}
+
+	mediaWorker       Triggerable
+	enrichmentWorker  Triggerable
+	healthcheckWorker Triggerable
 }
 
 func New(cfg *config.Config, orchestrator *scraper.Orchestrator, store *storage.SQLiteStore, clients *httputil.Clients) *Scheduler {
@@ -35,11 +45,18 @@ func New(cfg *config.Config, orchestrator *scraper.Orchestrator, store *storage.
 	}
 }
 
+// SetWorkers registers background workers for manual triggering
+func (s *Scheduler) SetWorkers(media, enrichment, healthcheck Triggerable) {
+	s.mediaWorker = media
+	s.enrichmentWorker = enrichment
+	s.healthcheckWorker = healthcheck
+}
+
 func (s *Scheduler) Start(ctx context.Context) error {
 	// Always start background runners
 	go s.pollCommands(ctx)
 	go s.pollResumes(ctx)
-	go s.pollHealthcheck(ctx)
+	// Note: healthcheck is now handled by workers.HealthcheckWorker against Postgres
 
 	if s.cfg.Scheduler.Cron != "" {
 		log.Printf("Starting scheduler with cron: %s", s.cfg.Scheduler.Cron)
@@ -101,7 +118,7 @@ func (s *Scheduler) pollCommands(ctx context.Context) {
 
 			for _, cmd := range cmds {
 				log.Printf("Processing command: %s", cmd.Command)
-				if err := s.orchestrator.HandleCommand(&cmd); err != nil {
+				if err := s.handleCommand(&cmd); err != nil {
 					log.Printf("Command error: %v", err)
 				}
 				if err := s.store.MarkCommandProcessed(cmd.ID); err != nil {
@@ -113,6 +130,31 @@ func (s *Scheduler) pollCommands(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+func (s *Scheduler) handleCommand(cmd *models.Command) error {
+	switch cmd.Command {
+	case models.CmdRunMedia:
+		if s.mediaWorker != nil {
+			s.mediaWorker.Trigger()
+			log.Println("Media worker triggered via command")
+		}
+		return nil
+	case models.CmdRunEnrichment:
+		if s.enrichmentWorker != nil {
+			s.enrichmentWorker.Trigger()
+			log.Println("Enrichment worker triggered via command")
+		}
+		return nil
+	case models.CmdRunHealthcheck:
+		if s.healthcheckWorker != nil {
+			s.healthcheckWorker.Trigger()
+			log.Println("Healthcheck worker triggered via command")
+		}
+		return nil
+	default:
+		return s.orchestrator.HandleCommand(cmd)
 	}
 }
 

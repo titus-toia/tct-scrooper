@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -730,4 +731,26 @@ func absInt(v int) int {
 		return -v
 	}
 	return v
+}
+
+// ResetAllData clears all SQLite operational tables
+func (s *SQLiteStore) ResetAllData() error {
+	tables := []string{
+		"scrape_logs",
+		"scrape_runs",
+		"property_matches",
+		"listing_snapshots",
+		"properties",
+		"site_stats",
+		"commands",
+	}
+
+	for _, table := range tables {
+		_, err := s.db.Exec(fmt.Sprintf("DELETE FROM %s", table))
+		if err != nil {
+			return fmt.Errorf("clear %s: %w", table, err)
+		}
+	}
+
+	return nil
 }

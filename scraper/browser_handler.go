@@ -365,7 +365,11 @@ func (h *BrowserHandler) parseCurrentPage() []models.RawListing {
 	if err != nil || result == nil {
 		return nil
 	}
-	data := []byte(result.(string))
+	str, ok := result.(string)
+	if !ok {
+		return nil
+	}
+	data := []byte(str)
 	if len(data) == 0 {
 		return nil
 	}

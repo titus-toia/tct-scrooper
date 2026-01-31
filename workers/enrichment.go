@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -29,11 +30,17 @@ type EnrichmentWorker struct {
 	proxyURL        string
 	scrapingBeeKey  string
 	httpClient      *http.Client
+	triggerCh       chan struct{}
+	logFunc         LogFunc
 
 	mu          sync.Mutex
 	pw          *playwright.Playwright
 	context     playwright.BrowserContext
 	initialized bool
+}
+
+func (w *EnrichmentWorker) SetLogger(fn LogFunc) {
+	w.logFunc = fn
 }
 
 func NewEnrichmentWorker(store *storage.PostgresStore, mediaService *services.MediaService, proxyURL string) *EnrichmentWorker {
@@ -49,6 +56,8 @@ func NewEnrichmentWorker(store *storage.PostgresStore, mediaService *services.Me
 		mediaService:   mediaService,
 		proxyURL:       proxyURL,
 		scrapingBeeKey: scrapingBeeKey,
+		triggerCh:      make(chan struct{}, 1),
+		logFunc:        NoOpLogger,
 		httpClient: &http.Client{
 			Timeout: 60 * time.Second,
 			Transport: &http.Transport{
@@ -57,6 +66,14 @@ func NewEnrichmentWorker(store *storage.PostgresStore, mediaService *services.Me
 				IdleConnTimeout:     90 * time.Second,
 			},
 		},
+	}
+}
+
+// Trigger causes the worker to run immediately
+func (w *EnrichmentWorker) Trigger() {
+	select {
+	case w.triggerCh <- struct{}{}:
+	default:
 	}
 }
 
@@ -272,10 +289,11 @@ func (w *EnrichmentWorker) Enrich(ctx context.Context, listingURL string) (*Enri
 		if err == nil {
 			return data, nil
 		}
-		log.Printf("Enrichment: ScrapingBee failed (%v), falling back to Playwright", err)
+		// ScrapingBee failed - return error, don't fallback to Playwright
+		return nil, fmt.Errorf("scrapingbee: %w", err)
 	}
 
-	// Fallback to Playwright
+	// No ScrapingBee key - use Playwright
 	return w.enrichWithPlaywright(ctx, listingURL)
 }
 
@@ -283,7 +301,7 @@ func (w *EnrichmentWorker) enrichWithScrapingBee(ctx context.Context, listingURL
 	params := url.Values{}
 	params.Set("api_key", w.scrapingBeeKey)
 	params.Set("url", listingURL)
-	// Static mode: 1 credit, JS renders client-side but CDN URLs are in HTML
+	params.Set("render_js", "true") // 5 credits - full JS rendering for property details
 
 	apiURL := "https://app.scrapingbee.com/api/v1/?" + params.Encode()
 
@@ -499,6 +517,33 @@ func (w *EnrichmentWorker) extractDataFromHTML(html string) (*EnrichedData, erro
 		data.Description = strings.TrimSpace(match[1])
 	}
 
+	// Extract property details using ID patterns
+	data.PropertyType = extractHTMLValue(html, "propertyDetailsSectionContentSubCon_PropertyType")
+	data.Stories = extractHTMLInt(html, "propertyDetailsSectionContentSubCon_Stories")
+	data.YearBuilt = extractHTMLInt(html, "propertyDetailsSectionContentSubCon_BuiltIn")
+	data.NeighbourhoodName = extractHTMLValue(html, "propertyDetailsSectionContentSubCon_NeighborhoodName")
+	data.Title = extractHTMLValue(html, "propertyDetailsSectionContentSubCon_Title")
+
+	// Building details
+	data.BasementType = extractHTMLValue(html, "propertyDetailsSectionVal_BasementType")
+	data.Cooling = extractHTMLValue(html, "propertyDetailsSectionVal_Cooling")
+	data.HeatingType = extractHTMLValue(html, "propertyDetailsSectionVal_HeatingType")
+	data.FireplaceType = extractHTMLValue(html, "propertyDetailsSectionVal_FireplaceType")
+	data.FireProtection = extractHTMLValue(html, "propertyDetailsSectionVal_FireProtection")
+	data.TotalParkingSpaces = extractHTMLInt(html, "propertyDetailsSectionVal_TotalParkingSpaces")
+
+	// Lists
+	data.Appliances = extractHTMLList(html, "propertyDetailsSectionVal_AppliancesIncluded")
+	data.BuildingAmenities = extractHTMLList(html, "propertyDetailsSectionVal_BuildingAmenities")
+	data.Structures = extractHTMLList(html, "propertyDetailsSectionVal_Structures")
+	data.AmenitiesNearby = extractHTMLList(html, "propertyDetailsSectionVal_AmenitiesNearby")
+
+	// Legal description
+	legalRegex := regexp.MustCompile(`id="propertyLegalDescriptionCon"[^>]*>([^<]+)`)
+	if match := legalRegex.FindStringSubmatch(html); len(match) > 1 {
+		data.LegalDescription = strings.TrimSpace(match[1])
+	}
+
 	// Extract rooms - pattern: listingDetailsRoomDetails_Room">Room Type</div>
 	roomRegex := regexp.MustCompile(`listingDetailsRoomDetails_Floor">([^<]+)</div>\s*<div class="listingDetailsRoomDetails_Room">([^<]+)`)
 	roomMatches := roomRegex.FindAllStringSubmatch(html, -1)
@@ -511,8 +556,52 @@ func (w *EnrichmentWorker) extractDataFromHTML(html string) (*EnrichedData, erro
 		}
 	}
 
-	log.Printf("Enrichment: extracted %d photos, %d rooms", len(data.Photos), len(data.Rooms))
+	log.Printf("Enrichment: extracted %d photos, %d rooms, type=%s, year=%d", len(data.Photos), len(data.Rooms), data.PropertyType, data.YearBuilt)
 	return data, nil
+}
+
+// extractHTMLValue extracts text content from an element with given ID prefix
+func extractHTMLValue(html, idPrefix string) string {
+	// Look for: id="idPrefix"...class="propertyDetailsSectionContentValue">VALUE</
+	// Use (?s) to make . match newlines
+	pattern := regexp.MustCompile(`(?s)id="` + idPrefix + `"[^>]*>.*?class="propertyDetailsSectionContentValue"[^>]*>\s*([^<]+)`)
+	if match := pattern.FindStringSubmatch(html); len(match) > 1 {
+		return strings.TrimSpace(match[1])
+	}
+	return ""
+}
+
+// extractHTMLInt extracts an integer from HTML element
+func extractHTMLInt(html, idPrefix string) int {
+	val := extractHTMLValue(html, idPrefix)
+	if val == "" {
+		return 0
+	}
+	// Extract first number found
+	numRegex := regexp.MustCompile(`(\d+)`)
+	if match := numRegex.FindStringSubmatch(val); len(match) > 1 {
+		if n, err := strconv.Atoi(match[1]); err == nil {
+			return n
+		}
+	}
+	return 0
+}
+
+// extractHTMLList extracts a comma-separated list from HTML element
+func extractHTMLList(html, idPrefix string) []string {
+	val := extractHTMLValue(html, idPrefix)
+	if val == "" {
+		return nil
+	}
+	parts := strings.Split(val, ",")
+	var result []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			result = append(result, p)
+		}
+	}
+	return result
 }
 
 func (w *EnrichmentWorker) extractRooms(page playwright.Page) []Room {
@@ -662,6 +751,9 @@ func (w *EnrichmentWorker) Run(ctx context.Context, batchSize int, interval time
 			return
 		case <-ticker.C:
 			w.processBatch(ctx, batchSize)
+		case <-w.triggerCh:
+			log.Println("Enrichment worker triggered manually")
+			w.processBatch(ctx, batchSize)
 		}
 	}
 }
@@ -702,6 +794,7 @@ func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
 
 	log.Printf("Enrichment: processing %d listings", len(listings))
 
+	var enriched, blocked, failed int
 	for _, l := range listings {
 		data, err := w.Enrich(ctx, l.URL)
 		if err != nil {
@@ -709,22 +802,43 @@ func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
 
 			w.store.Pool().Exec(ctx, `UPDATE listings SET enrichment_attempts = enrichment_attempts + 1, updated_at = NOW() WHERE id = $1`, l.ID)
 
+			if strings.Contains(err.Error(), "Incapsula") || strings.Contains(err.Error(), "blocked") {
+				blocked++
+			} else {
+				failed++
+			}
+
 			if l.Attempts+1 >= 3 {
 				log.Printf("Enrichment: max attempts reached for %s, giving up", l.ID)
 				w.store.Pool().Exec(ctx, `UPDATE listings SET features = '{}' WHERE id = $1`, l.ID)
+				w.logFunc(models.LogLevelWarn, "enrichment", fmt.Sprintf("Gave up after 3 attempts: %s", l.URL))
 			}
 			continue
 		}
 
 		if err := w.UpdateListing(ctx, l.ID, data); err != nil {
 			log.Printf("Enrichment: failed to update %s: %v", l.ID, err)
+			failed++
 			continue
 		}
 
+		enriched++
 		log.Printf("Enrichment: enriched %s (%d photos, %d rooms)", l.ID, len(data.Photos), len(data.Rooms))
 
 		// Longer delay between requests to avoid detection
 		time.Sleep(time.Duration(2000+rand.Intn(3000)) * time.Millisecond)
+	}
+
+	// Log batch summary
+	if enriched > 0 || blocked > 0 || failed > 0 {
+		msg := fmt.Sprintf("Batch done: %d enriched", enriched)
+		if blocked > 0 {
+			msg += fmt.Sprintf(", %d blocked", blocked)
+		}
+		if failed > 0 {
+			msg += fmt.Sprintf(", %d failed", failed)
+		}
+		w.logFunc(models.LogLevelInfo, "enrichment", msg)
 	}
 }
 
