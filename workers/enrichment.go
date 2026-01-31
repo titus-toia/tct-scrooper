@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -28,11 +29,19 @@ type EnrichmentWorker struct {
 
 // NewEnrichmentWorker creates a new enrichment worker
 func NewEnrichmentWorker(store *storage.PostgresStore, mediaService *services.MediaService, proxyURL string) *EnrichmentWorker {
-	client := &http.Client{
-		Timeout: 30 * time.Second,
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+
+	if proxyURL != "" {
+		if proxyParsed, err := url.Parse(proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(proxyParsed)
+			log.Printf("Enrichment worker using proxy: %s", proxyParsed.Host)
+		}
 	}
 
-	// TODO: configure proxy transport if proxyURL is set
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: transport,
+	}
 
 	return &EnrichmentWorker{
 		store:        store,

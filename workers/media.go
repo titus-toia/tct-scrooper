@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"path"
 	"strings"
 	"time"
@@ -33,11 +34,19 @@ type S3Uploader interface {
 
 // NewMediaWorker creates a new media worker
 func NewMediaWorker(store *storage.PostgresStore, uploader S3Uploader, proxyURL string) *MediaWorker {
-	client := &http.Client{
-		Timeout: 60 * time.Second, // Longer timeout for media downloads
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+
+	if proxyURL != "" {
+		if proxyParsed, err := url.Parse(proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(proxyParsed)
+			log.Printf("Media worker using proxy: %s", proxyParsed.Host)
+		}
 	}
 
-	// TODO: configure proxy transport if proxyURL is set
+	client := &http.Client{
+		Timeout:   60 * time.Second,
+		Transport: transport,
+	}
 
 	return &MediaWorker{
 		store:      store,

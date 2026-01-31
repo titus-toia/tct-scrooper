@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,14 +25,22 @@ type HealthcheckWorker struct {
 
 // NewHealthcheckWorker creates a new healthcheck worker
 func NewHealthcheckWorker(store *storage.PostgresStore, proxyURL string) *HealthcheckWorker {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+
+	if proxyURL != "" {
+		if proxyParsed, err := url.Parse(proxyURL); err == nil {
+			transport.Proxy = http.ProxyURL(proxyParsed)
+			log.Printf("Healthcheck worker using proxy: %s", proxyParsed.Host)
+		}
+	}
+
 	client := &http.Client{
-		Timeout: 30 * time.Second,
+		Timeout:   30 * time.Second,
+		Transport: transport,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			return http.ErrUseLastResponse // Don't follow redirects
 		},
 	}
-
-	// TODO: configure proxy transport if proxyURL is set
 
 	return &HealthcheckWorker{
 		store:      store,
