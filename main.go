@@ -21,6 +21,7 @@ import (
 
 var (
 	scrapeNow = flag.Bool("scrape", false, "Run scrape once and exit")
+	resetData = flag.Bool("reset", false, "Nuke all domain data and exit (for testing)")
 )
 
 func main() {
@@ -58,6 +59,16 @@ func main() {
 	}
 	defer pgStore.Close()
 	log.Printf("Connected to Postgres: %s", maskConnectionString(cfg.Supabase.DBURL))
+
+	// Handle reset command
+	if *resetData {
+		log.Println("Resetting all domain data...")
+		if err := pgStore.ResetAllData(ctx); err != nil {
+			log.Fatalf("Reset failed: %v", err)
+		}
+		log.Println("All domain data has been nuked!")
+		return
+	}
 
 	// Initialize services
 	matchService := services.NewMatchService(pgStore)

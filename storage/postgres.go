@@ -765,3 +765,31 @@ func (s *PostgresStore) queryMediaList(ctx context.Context, query string, id int
 	}
 	return media, rows.Err()
 }
+
+// ResetAllData truncates all domain tables (for testing)
+func (s *PostgresStore) ResetAllData(ctx context.Context) error {
+	// Order matters due to foreign keys - truncate in dependency order
+	tables := []string{
+		"listing_media",
+		"listing_agents",
+		"property_links",
+		"price_points",
+		"property_events",
+		"property_identifiers",
+		"listings",
+		"properties",
+		"media",
+		"agents",
+		"brokerages",
+		"scrape_runs",
+	}
+
+	for _, table := range tables {
+		_, err := s.pool.Exec(ctx, fmt.Sprintf("TRUNCATE TABLE %s CASCADE", table))
+		if err != nil {
+			return fmt.Errorf("truncate %s: %w", table, err)
+		}
+	}
+
+	return nil
+}
