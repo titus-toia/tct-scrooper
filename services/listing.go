@@ -62,7 +62,7 @@ func (s *ListingService) ProcessListing(ctx context.Context, raw *models.RawList
 			ID:           uuid.New(),
 			Fingerprint:  fingerprint,
 			Country:      "CA",
-			Province:     provinceFromPostalCode(raw.PostalCode),
+			Province:     raw.Province,
 			City:         raw.City,
 			PostalCode:   raw.PostalCode,
 			AddressFull:  raw.Address,
@@ -464,40 +464,6 @@ func float64Ptr(v float64) *float64 {
 		return nil
 	}
 	return &v
-}
-
-// provinceFromPostalCode extracts province from Canadian postal code first letter
-func provinceFromPostalCode(postalCode string) string {
-	if len(postalCode) == 0 {
-		return ""
-	}
-	switch postalCode[0] {
-	case 'A', 'a':
-		return "NL" // Newfoundland and Labrador
-	case 'B', 'b':
-		return "NS" // Nova Scotia
-	case 'C', 'c':
-		return "PE" // Prince Edward Island
-	case 'E', 'e':
-		return "NB" // New Brunswick
-	case 'G', 'g', 'H', 'h', 'J', 'j':
-		return "QC" // Quebec
-	case 'K', 'k', 'L', 'l', 'M', 'm', 'N', 'n', 'P', 'p':
-		return "ON" // Ontario
-	case 'R', 'r':
-		return "MB" // Manitoba
-	case 'S', 's':
-		return "SK" // Saskatchewan
-	case 'T', 't':
-		return "AB" // Alberta
-	case 'V', 'v':
-		return "BC" // British Columbia
-	case 'X', 'x':
-		return "NT" // Northwest Territories / Nunavut
-	case 'Y', 'y':
-		return "YT" // Yukon
-	}
-	return ""
 }
 
 // ProcessStats tracks aggregate statistics for a scrape run

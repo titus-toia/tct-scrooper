@@ -45,6 +45,7 @@ type RawListing struct {
 	MLS          string          `json:"mls"`
 	Address      string          `json:"address"`
 	City         string          `json:"city"`
+	Province     string          `json:"province"`
 	PostalCode   string          `json:"postal_code"`
 	Price        int             `json:"price"`
 	Beds         int             `json:"beds"`

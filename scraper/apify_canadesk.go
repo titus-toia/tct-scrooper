@@ -76,6 +76,7 @@ func (a *CanadeskAdapter) ParseListing(data json.RawMessage) (models.RawListing,
 		MLS:          r.MlsNumber,
 		Address:      r.Property.Address.AddressText,
 		City:         r.Property.Address.City,
+		Province:     normalizeProvince(r.ProvinceName),
 		PostalCode:   r.PostalCode,
 		Price:        parsePrice(r.Property.Price),
 		Beds:         beds,
@@ -115,6 +116,7 @@ type canadeskListing struct {
 	PublicRemarks string `json:"PublicRemarks"`
 	RelativeURLEn string `json:"RelativeURLEn"`
 	PostalCode    string `json:"PostalCode"`
+	ProvinceName  string `json:"ProvinceName"`
 	Property      struct {
 		Price   string `json:"Price"`
 		Type    string `json:"Type"`
@@ -171,6 +173,39 @@ func extractCanadeskPhotos(photos []struct {
 		}
 	}
 	return urls
+}
+
+// normalizeProvince converts province name to 2-letter code
+func normalizeProvince(name string) string {
+	switch strings.ToLower(name) {
+	case "ontario":
+		return "ON"
+	case "quebec", "québec":
+		return "QC"
+	case "british columbia":
+		return "BC"
+	case "alberta":
+		return "AB"
+	case "manitoba":
+		return "MB"
+	case "saskatchewan":
+		return "SK"
+	case "nova scotia":
+		return "NS"
+	case "new brunswick":
+		return "NB"
+	case "newfoundland and labrador", "newfoundland":
+		return "NL"
+	case "prince edward island":
+		return "PE"
+	case "northwest territories":
+		return "NT"
+	case "yukon":
+		return "YT"
+	case "nunavut":
+		return "NU"
+	}
+	return name // Return as-is if already a code or unknown
 }
 
 func extractCanadeskRealtor(individuals []struct {
