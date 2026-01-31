@@ -109,3 +109,6 @@ tui/tui
 # Daemon logs
 daemon.log
 daemon.log.1
+
+# Client documentation (contains sensitive info)
+docs-uk-infra/
