@@ -1,6 +1,7 @@
 package workers
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -106,29 +107,14 @@ func (w *MediaWorker) Process(ctx context.Context, media *models.Media) MediaPro
 			contentType = "image/jpeg"
 		}
 
-		reader := &bytesReader{data: data}
-		if err := w.uploader.Upload(ctx, result.S3Key, reader, contentType); err != nil {
+		// bytes.NewReader implements io.ReadSeeker so AWS SDK can determine content length
+		if err := w.uploader.Upload(ctx, result.S3Key, bytes.NewReader(data), contentType); err != nil {
 			result.Error = fmt.Errorf("upload: %w", err)
 			return result
 		}
 	}
 
 	return result
-}
-
-// bytesReader wraps []byte to implement io.Reader
-type bytesReader struct {
-	data []byte
-	pos  int
-}
-
-func (r *bytesReader) Read(p []byte) (n int, err error) {
-	if r.pos >= len(r.data) {
-		return 0, io.EOF
-	}
-	n = copy(p, r.data[r.pos:])
-	r.pos += n
-	return n, nil
 }
 
 // guessExtension determines file extension from URL or content-type

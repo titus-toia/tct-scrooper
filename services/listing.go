@@ -121,6 +121,16 @@ func (s *ListingService) ProcessListing(ctx context.Context, raw *models.RawList
 	var previousPrice *float64
 
 	if existingListing == nil {
+		// Check if this is a relist (property has different active listing)
+		prevListing, _ := s.store.GetActiveListingForProperty(ctx, property.ID)
+		if prevListing != nil && prevListing.ExternalID != raw.MLS {
+			// Delist the old one first
+			if err := s.store.UpdateListingStatus(ctx, prevListing.ID, models.ListingStatusDelisted, &now); err != nil {
+				log.Printf("Warning: failed to delist previous listing: %v", err)
+			}
+			result.IsRelisted = true
+		}
+
 		// New listing
 		listing = &models.Listing{
 			ID:           uuid.New(),
@@ -148,12 +158,6 @@ func (s *ListingService) ProcessListing(ctx context.Context, raw *models.RawList
 		}
 		result.IsNewListing = true
 		result.ListingID = listing.ID
-
-		// Check if this is a relist (property had previous listings)
-		prevListing, _ := s.store.GetActiveListingForProperty(ctx, property.ID)
-		if prevListing != nil && prevListing.ID != listing.ID {
-			result.IsRelisted = true
-		}
 	} else {
 		listing = existingListing
 		result.ListingID = listing.ID
