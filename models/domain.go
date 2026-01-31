@@ -256,10 +256,13 @@ const (
 
 // Media category
 const (
-	MediaCategoryListing   = "listing"   // listing photos, floor plans, videos
-	MediaCategoryAgent     = "agent"     // agent headshots
-	MediaCategoryBrokerage = "brokerage" // brokerage logos
-	MediaCategoryProperty  = "property"  // property-level docs (assessments, permits, surveys)
+	MediaCategoryListing    = "listing"    // listing photos, floor plans, videos
+	MediaCategoryAgent      = "agent"      // agent headshots
+	MediaCategoryBrokerage  = "brokerage"  // brokerage logos
+	MediaCategoryProperty   = "property"   // generic property-level docs
+	MediaCategoryRecord     = "record"     // permits, inspections, certificates
+	MediaCategoryAssessment = "assessment" // tax notices, appeals, valuations
+	MediaCategoryIntel      = "intel"      // screenshots, evidence, court filings
 )
 
 // Identifier types

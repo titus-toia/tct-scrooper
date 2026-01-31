@@ -164,18 +164,32 @@ func isImageExt(ext string) bool {
 
 // generateS3Key creates the S3 key based on media category and location
 // Schema:
-//   - listings/{province}/{city}/{hash}.{ext}  - property photos, floor plans
-//   - agents/{hash}.{ext}                      - agent headshots
-//   - brokerages/{hash}.{ext}                  - brokerage logos
+//   - listings/{province}/{city}/{hash}.{ext}                - property photos, floor plans
+//   - properties/{province}/{city}/{hash}.{ext}              - generic property docs
+//   - properties/{province}/{city}/records/{hash}.{ext}      - permits, inspections
+//   - properties/{province}/{city}/assessments/{hash}.{ext}  - tax notices, appeals
+//   - properties/{province}/{city}/intel/{hash}.{ext}        - screenshots, evidence
+//   - agents/{hash}.{ext}                                    - agent headshots
+//   - brokerages/{hash}.{ext}                                - brokerage logos
 func generateS3Key(media *models.Media, contentHash, ext string) string {
+	province := safeProvince(media.Province)
+	city := safeCity(media.City)
+
 	switch media.Category {
 	case models.MediaCategoryListing:
-		// Use location for listing media (photos, floor plans)
-		return fmt.Sprintf("listings/%s/%s/%s%s", safeProvince(media.Province), safeCity(media.City), contentHash, ext)
+		return fmt.Sprintf("listings/%s/%s/%s%s", province, city, contentHash, ext)
 
 	case models.MediaCategoryProperty:
-		// Property-level docs (assessments, permits, surveys)
-		return fmt.Sprintf("properties/%s/%s/%s%s", safeProvince(media.Province), safeCity(media.City), contentHash, ext)
+		return fmt.Sprintf("properties/%s/%s/%s%s", province, city, contentHash, ext)
+
+	case models.MediaCategoryRecord:
+		return fmt.Sprintf("properties/%s/%s/records/%s%s", province, city, contentHash, ext)
+
+	case models.MediaCategoryAssessment:
+		return fmt.Sprintf("properties/%s/%s/assessments/%s%s", province, city, contentHash, ext)
+
+	case models.MediaCategoryIntel:
+		return fmt.Sprintf("properties/%s/%s/intel/%s%s", province, city, contentHash, ext)
 
 	case models.MediaCategoryAgent:
 		return fmt.Sprintf("agents/%s%s", contentHash, ext)
@@ -184,7 +198,6 @@ func generateS3Key(media *models.Media, contentHash, ext string) string {
 		return fmt.Sprintf("brokerages/%s%s", contentHash, ext)
 
 	default:
-		// Fallback to old schema for uncategorized media
 		return fmt.Sprintf("media/%s/%s%s", contentHash[:2], contentHash, ext)
 	}
 }

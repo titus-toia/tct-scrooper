@@ -100,11 +100,11 @@ func main() {
 
 	// Start background workers
 	enrichmentWorker := workers.NewEnrichmentWorker(pgStore, mediaService, cfg.Proxy.URL)
-	go enrichmentWorker.Run(ctx, 10, 5*time.Minute) // batch of 10 every 5 min
+	go enrichmentWorker.Run(ctx, 25, 5*time.Minute) // batch of 25 every 5 min
 	log.Println("Enrichment worker started")
 
 	healthcheckWorker := workers.NewHealthcheckWorker(pgStore, cfg.Proxy.URL)
-	go healthcheckWorker.Run(ctx, 24*time.Hour, 20, 30*time.Minute) // check listings older than 24h, batch 20, every 30 min
+	go healthcheckWorker.Run(ctx, 1*time.Hour, 50, 5*time.Minute) // check listings older than 1h, batch 50, every 5 min
 	log.Println("Healthcheck worker started")
 
 	// Media worker

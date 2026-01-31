@@ -146,7 +146,16 @@ func (o *Orchestrator) RunSite(ctx context.Context, siteID string) error {
 		}
 	}()
 
+	isFirst := true
 	for regionID, region := range siteCfg.Regions {
+		// Stagger between regions (skip first)
+		if !isFirst && o.cfg.Scraper.RegionStaggerSecs > 0 {
+			stagger := time.Duration(o.cfg.Scraper.RegionStaggerSecs) * time.Second
+			o.log(run.ID, models.LogLevelInfo, fmt.Sprintf("Waiting %v before next region", stagger), siteID)
+			time.Sleep(stagger)
+		}
+		isFirst = false
+
 		o.log(run.ID, models.LogLevelInfo, fmt.Sprintf("Scraping region: %s", regionID), siteID)
 
 		listings, err := handler.Scrape(ctx, region)

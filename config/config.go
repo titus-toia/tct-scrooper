@@ -44,7 +44,8 @@ type SchedulerConfig struct {
 }
 
 type ScraperConfig struct {
-	DelayMS int
+	DelayMS            int
+	RegionStaggerSecs  int // delay between regions in seconds (e.g., 300 = 5 min)
 }
 
 type SiteConfig struct {
@@ -82,7 +83,8 @@ func Load() (*Config, error) {
 			Cron: os.Getenv("SCRAPE_CRON"),
 		},
 		Scraper: ScraperConfig{
-			DelayMS: getEnvInt("SCRAPE_DELAY_MS", 500),
+			DelayMS:           getEnvInt("SCRAPE_DELAY_MS", 500),
+			RegionStaggerSecs: getEnvInt("SCRAPE_REGION_STAGGER_SECS", 0),
 		},
 		MediaS3: MediaS3Config{
 			Bucket:          os.Getenv("MEDIA_S3_BUCKET"),

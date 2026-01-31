@@ -670,3 +670,98 @@ func (s *PostgresStore) GetStaleActiveListings(ctx context.Context, staleDuratio
 	}
 	return listings, rows.Err()
 }
+
+// =============================================================================
+// Media Bridge Tables (Records, Assessments, Intel)
+// =============================================================================
+
+func (s *PostgresStore) LinkMediaToRecord(ctx context.Context, recordID int64, mediaID uuid.UUID, position int, label string) error {
+	query := `
+		INSERT INTO property_records_media (record_id, media_id, position, label)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (record_id, media_id) DO UPDATE SET
+			position = EXCLUDED.position,
+			label = EXCLUDED.label`
+	_, err := s.pool.Exec(ctx, query, recordID, mediaID, position, label)
+	return err
+}
+
+func (s *PostgresStore) LinkMediaToAssessment(ctx context.Context, assessmentID int64, mediaID uuid.UUID, position int, label string) error {
+	query := `
+		INSERT INTO property_assessments_media (assessment_id, media_id, position, label)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (assessment_id, media_id) DO UPDATE SET
+			position = EXCLUDED.position,
+			label = EXCLUDED.label`
+	_, err := s.pool.Exec(ctx, query, assessmentID, mediaID, position, label)
+	return err
+}
+
+func (s *PostgresStore) LinkMediaToIntel(ctx context.Context, intelID int64, mediaID uuid.UUID, position int, label string) error {
+	query := `
+		INSERT INTO property_intel_media (intel_id, media_id, position, label)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (intel_id, media_id) DO UPDATE SET
+			position = EXCLUDED.position,
+			label = EXCLUDED.label`
+	_, err := s.pool.Exec(ctx, query, intelID, mediaID, position, label)
+	return err
+}
+
+func (s *PostgresStore) GetMediaForRecord(ctx context.Context, recordID int64) ([]models.Media, error) {
+	query := `
+		SELECT m.id, m.s3_key, m.content_hash, m.media_type, m.category,
+			m.province, m.city, m.mime_type, m.file_size_bytes, m.original_url,
+			m.height, m.width, m.pages, m.duration, m.metadata, m.status, m.attempts, m.created_at
+		FROM media m
+		JOIN property_records_media rm ON rm.media_id = m.id
+		WHERE rm.record_id = $1
+		ORDER BY rm.position`
+	return s.queryMediaList(ctx, query, recordID)
+}
+
+func (s *PostgresStore) GetMediaForAssessment(ctx context.Context, assessmentID int64) ([]models.Media, error) {
+	query := `
+		SELECT m.id, m.s3_key, m.content_hash, m.media_type, m.category,
+			m.province, m.city, m.mime_type, m.file_size_bytes, m.original_url,
+			m.height, m.width, m.pages, m.duration, m.metadata, m.status, m.attempts, m.created_at
+		FROM media m
+		JOIN property_assessments_media am ON am.media_id = m.id
+		WHERE am.assessment_id = $1
+		ORDER BY am.position`
+	return s.queryMediaList(ctx, query, assessmentID)
+}
+
+func (s *PostgresStore) GetMediaForIntel(ctx context.Context, intelID int64) ([]models.Media, error) {
+	query := `
+		SELECT m.id, m.s3_key, m.content_hash, m.media_type, m.category,
+			m.province, m.city, m.mime_type, m.file_size_bytes, m.original_url,
+			m.height, m.width, m.pages, m.duration, m.metadata, m.status, m.attempts, m.created_at
+		FROM media m
+		JOIN property_intel_media im ON im.media_id = m.id
+		WHERE im.intel_id = $1
+		ORDER BY im.position`
+	return s.queryMediaList(ctx, query, intelID)
+}
+
+func (s *PostgresStore) queryMediaList(ctx context.Context, query string, id int64) ([]models.Media, error) {
+	rows, err := s.pool.Query(ctx, query, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var media []models.Media
+	for rows.Next() {
+		var m models.Media
+		if err := rows.Scan(
+			&m.ID, &m.S3Key, &m.ContentHash, &m.MediaType, &m.Category,
+			&m.Province, &m.City, &m.MimeType, &m.FileSizeBytes, &m.OriginalURL,
+			&m.Height, &m.Width, &m.Pages, &m.Duration, &m.Metadata, &m.Status, &m.Attempts, &m.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		media = append(media, m)
+	}
+	return media, rows.Err()
+}
