@@ -284,7 +284,10 @@ func (s *SQLiteStore) UpdateSiteStats(siteID string) error {
 			total_snapshots, properties_synced, success_rate, avg_run_duration_sec)
 		SELECT
 			?,
-			(SELECT started_at FROM scrape_runs WHERE site_id = ? ORDER BY started_at DESC LIMIT 1),
+			COALESCE(
+				(SELECT started_at FROM scrape_runs WHERE site_id = ? AND status = 'completed' ORDER BY started_at DESC LIMIT 1),
+				(SELECT started_at FROM scrape_runs WHERE site_id = ? ORDER BY started_at DESC LIMIT 1)
+			),
 			(SELECT status FROM scrape_runs WHERE site_id = ? ORDER BY started_at DESC LIMIT 1),
 			(SELECT COUNT(DISTINCT property_id) FROM listing_snapshots WHERE site_id = ?),
 			(SELECT COUNT(*) FROM listing_snapshots WHERE site_id = ?),
@@ -302,7 +305,7 @@ func (s *SQLiteStore) UpdateSiteStats(siteID string) error {
 			properties_synced = excluded.properties_synced,
 			success_rate = excluded.success_rate,
 			avg_run_duration_sec = excluded.avg_run_duration_sec`,
-		siteID, siteID, siteID, siteID, siteID, siteID, siteID, siteID)
+		siteID, siteID, siteID, siteID, siteID, siteID, siteID, siteID, siteID)
 	return err
 }
 
