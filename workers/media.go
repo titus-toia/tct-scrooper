@@ -79,6 +79,7 @@ type MediaProcessResult struct {
 	ContentHash string
 	Size        int64
 	IsDuplicate bool // true if content already exists in S3 (different URL, same image)
+	IsGone      bool // true if source returned 404/410 - file deleted, don't retry
 	Error       error
 }
 
@@ -103,6 +104,11 @@ func (w *MediaWorker) Process(ctx context.Context, media *models.Media) MediaPro
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == 404 || resp.StatusCode == 410 {
+		result.IsGone = true
+		result.Error = fmt.Errorf("source gone: %d", resp.StatusCode)
+		return result
+	}
 	if resp.StatusCode != 200 {
 		result.Error = fmt.Errorf("download status: %d", resp.StatusCode)
 		return result
@@ -290,15 +296,19 @@ func (w *MediaWorker) processBatch(ctx context.Context, batchSize int) {
 		result := w.Process(ctx, m)
 
 		if result.Error != nil {
-			log.Printf("Media worker: failed %s: %v", m.OriginalURL, result.Error)
-			failed++
-
-			newAttempts := m.Attempts + 1
-			status := models.MediaStatusPending
-			if newAttempts >= 3 {
-				status = models.MediaStatusFailed
+			if result.IsGone {
+				log.Printf("Media worker: gone %s: %v", m.OriginalURL, result.Error)
+				w.store.UpdateMediaStatus(ctx, m.ID, models.MediaStatusGone, nil, "", m.Attempts)
+			} else {
+				log.Printf("Media worker: failed %s: %v", m.OriginalURL, result.Error)
+				failed++
+				newAttempts := m.Attempts + 1
+				status := models.MediaStatusPending
+				if newAttempts >= 3 {
+					status = models.MediaStatusFailed
+				}
+				w.store.UpdateMediaStatus(ctx, m.ID, status, nil, "", newAttempts)
 			}
-			w.store.UpdateMediaStatus(ctx, m.ID, status, nil, "", newAttempts)
 			continue
 		}
 

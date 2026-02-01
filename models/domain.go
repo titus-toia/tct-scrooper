@@ -252,6 +252,7 @@ const (
 	MediaStatusUploading = "uploading"
 	MediaStatusUploaded  = "uploaded"
 	MediaStatusFailed    = "failed"
+	MediaStatusGone      = "gone" // 404/410 - source file deleted, don't retry
 )
 
 // Media category
