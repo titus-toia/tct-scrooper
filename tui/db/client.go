@@ -290,7 +290,7 @@ func (c *Client) GetActiveListingCount() (int, error) {
 
 func (c *Client) GetPendingMediaCount() (int, error) {
 	var count int
-	err := c.pg.QueryRow(c.ctx, "SELECT COUNT(*) FROM media WHERE s3_key IS NULL").Scan(&count)
+	err := c.pg.QueryRow(c.ctx, "SELECT COUNT(*) FROM media WHERE s3_key IS NULL AND status NOT IN ('gone', 'failed')").Scan(&count)
 	return count, err
 }
 
