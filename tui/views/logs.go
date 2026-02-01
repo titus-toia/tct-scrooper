@@ -40,7 +40,7 @@ func (l Logs) Refresh() tea.Cmd {
 		if level != "ALL" {
 			levelPtr = &level
 		}
-		logs, _ := l.db.GetRecentLogs(200, levelPtr)
+		logs, _ := l.db.GetRecentLogs(2000, levelPtr)
 		return logsMsg{logs}
 	}
 }
@@ -62,6 +62,10 @@ func (l Logs) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		l.height = msg.Height - 4
 
 	case tea.KeyMsg:
+		maxScroll := len(l.logs) - l.visibleLines()
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
 		switch msg.String() {
 		case "left", "h":
 			if l.levelIndex > 0 {
@@ -78,20 +82,22 @@ func (l Logs) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				l.scrollOffset--
 			}
 		case "down", "j":
-			maxScroll := len(l.logs) - l.visibleLines()
-			if maxScroll < 0 {
-				maxScroll = 0
-			}
 			if l.scrollOffset < maxScroll {
 				l.scrollOffset++
+			}
+		case "pgup", "ctrl+u":
+			l.scrollOffset -= 20
+			if l.scrollOffset < 0 {
+				l.scrollOffset = 0
+			}
+		case "pgdown", "ctrl+d":
+			l.scrollOffset += 20
+			if l.scrollOffset > maxScroll {
+				l.scrollOffset = maxScroll
 			}
 		case "g":
 			l.scrollOffset = 0
 		case "G":
-			maxScroll := len(l.logs) - l.visibleLines()
-			if maxScroll < 0 {
-				maxScroll = 0
-			}
 			l.scrollOffset = maxScroll
 		}
 	}
@@ -142,13 +148,39 @@ func (l Logs) renderLogs() string {
 		end = len(l.logs)
 	}
 
+	// Build scrollbar
+	total := len(l.logs)
+	scrollbarHeight := visible
+	if scrollbarHeight < 3 {
+		scrollbarHeight = 3
+	}
+
+	// Calculate thumb position and size
+	thumbSize := (visible * scrollbarHeight) / total
+	if thumbSize < 1 {
+		thumbSize = 1
+	}
+	maxScroll := total - visible
+	if maxScroll < 1 {
+		maxScroll = 1
+	}
+	thumbPos := (l.scrollOffset * (scrollbarHeight - thumbSize)) / maxScroll
+
 	var lines []string
 	for i := start; i < end; i++ {
 		log := l.logs[i]
-		lines = append(lines, l.formatLog(log))
+		lineIdx := i - start
+
+		// Scrollbar character
+		scrollChar := "│"
+		if lineIdx >= thumbPos && lineIdx < thumbPos+thumbSize {
+			scrollChar = "┃"
+		}
+
+		lines = append(lines, styles.Muted.Render(scrollChar)+" "+l.formatLog(log))
 	}
 
-	scrollInfo := fmt.Sprintf("  [%d-%d of %d]", start+1, end, len(l.logs))
+	scrollInfo := fmt.Sprintf("  [%d-%d of %d]  (pgup/pgdn to scroll)", start+1, end, len(l.logs))
 	header := styles.Muted.Render(scrollInfo)
 
 	return header + "\n" + strings.Join(lines, "\n")

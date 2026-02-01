@@ -174,8 +174,8 @@ func (o *Orchestrator) RunSite(ctx context.Context, siteID string) error {
 		}
 
 		run.ListingsFound += len(listings)
-		o.log(run.ID, models.LogLevelInfo, fmt.Sprintf("Region %s: %d listings", regionID, len(listings)), siteID)
 
+		propsBeforeRegion := stats.PropertiesNew
 		for _, listing := range listings {
 			if err := o.processListing(ctx, run, &listing, siteID, pgRunID, stats); err != nil {
 				o.log(run.ID, models.LogLevelError, fmt.Sprintf("Process error for %s: %v", listing.MLS, err), siteID)
@@ -183,6 +183,8 @@ func (o *Orchestrator) RunSite(ctx context.Context, siteID string) error {
 				stats.Errors++
 			}
 		}
+		regionNew := stats.PropertiesNew - propsBeforeRegion
+		o.log(run.ID, models.LogLevelInfo, fmt.Sprintf("Region %s: %d listings, %d new", regionID, len(listings), regionNew), siteID)
 	}
 
 	run.Status = models.RunStatusCompleted
@@ -267,4 +269,11 @@ func (o *Orchestrator) MarshalStatus() ([]byte, error) {
 		"sites":  o.GetSiteIDs(),
 	}
 	return json.Marshal(status)
+}
+
+func (o *Orchestrator) GetLastRunTime(ctx context.Context) (time.Time, error) {
+	if o.pgStore == nil {
+		return time.Time{}, nil
+	}
+	return o.pgStore.GetLastScrapeRunTime(ctx)
 }

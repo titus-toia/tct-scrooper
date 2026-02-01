@@ -35,6 +35,7 @@ type model struct {
 }
 
 type tickMsg time.Time
+type logTickMsg time.Time
 type refreshMsg struct{}
 
 func initialModel(dbClient *db.Client, logPath string) model {
@@ -53,12 +54,19 @@ func (m model) Init() tea.Cmd {
 		m.data.Init(),
 		m.logs.Init(),
 		tickCmd(),
+		logTickCmd(),
 	)
 }
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(30*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
+	})
+}
+
+func logTickCmd() tea.Cmd {
+	return tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
+		return logTickMsg(t)
 	})
 }
 
@@ -119,6 +127,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		cmds = append(cmds, m.refreshActive(), tickCmd())
+
+	case logTickMsg:
+		cmds = append(cmds, m.dashboard.RefreshLog(), logTickCmd())
 
 	case refreshMsg:
 		cmds = append(cmds, m.refreshActive())

@@ -50,6 +50,9 @@ type Dashboard struct {
 	logBuffer       int       // total lines to keep
 	logModTime      time.Time // last modification time of log file
 	daemonActive    bool      // whether systemd service is active
+	prevLineCount   int       // previous line count for new line detection
+	hasNewLines     bool      // true if new lines appeared
+	newLinesAt      time.Time // when new lines were detected
 }
 
 func NewDashboard(dbClient *db.Client, logPath string) Dashboard {
@@ -88,6 +91,10 @@ func (d Dashboard) tailLog() tea.Cmd {
 		active := isDaemonActive()
 		return logTailMsg{lines, modTime, active}
 	}
+}
+
+func (d Dashboard) RefreshLog() tea.Cmd {
+	return d.tailLog()
 }
 
 func isDaemonActive() bool {
@@ -159,6 +166,14 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		d.enrichmentQueue = msg.enrichmentQueue
 		return d, d.tailLog()
 	case logTailMsg:
+		if len(msg.lines) > d.prevLineCount && d.prevLineCount > 0 {
+			d.hasNewLines = true
+			d.newLinesAt = time.Now()
+		}
+		if time.Since(d.newLinesAt) > 3*time.Second {
+			d.hasNewLines = false
+		}
+		d.prevLineCount = len(msg.lines)
 		d.logLines = msg.lines
 		d.logModTime = msg.modTime
 		d.daemonActive = msg.daemonActive
@@ -256,6 +271,8 @@ func (d Dashboard) renderLogTail() string {
 		scrollInfo = styles.StatusError.Render(" ● STOPPED ")
 	} else if d.logScroll > 0 {
 		scrollInfo = styles.StatusPending.Render(fmt.Sprintf(" ↑%d ", d.logScroll))
+	} else if d.hasNewLines {
+		scrollInfo = styles.StatusSuccess.Render(" ● LIVE ") + styles.Notification.Render(" ★ NEW ")
 	} else {
 		scrollInfo = styles.StatusSuccess.Render(" ● LIVE ")
 	}

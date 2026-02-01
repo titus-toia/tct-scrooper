@@ -112,3 +112,4 @@ daemon.log.1
 
 # Client documentation (contains sensitive info)
 docs-uk-infra/
+tui-go/tui-go

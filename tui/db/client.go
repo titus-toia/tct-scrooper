@@ -337,32 +337,35 @@ func (c *Client) GetCityStats() ([]CityStats, error) {
 
 func (c *Client) GetListingsForProperty(propertyID string) ([]Listing, error) {
 	rows, err := c.pg.Query(c.ctx, `
-		SELECT
-			l.id::text,
-			l.property_id::text,
-			l.source,
-			COALESCE(l.external_id, ''),
-			COALESCE(l.url, ''),
-			l.type,
-			COALESCE(l.status, ''),
-			COALESCE(l.price, 0)::bigint,
-			COALESCE(l.beds, 0),
-			COALESCE(l.baths, 0),
-			COALESCE(l.sqft, 0),
-			COALESCE(l.description, ''),
-			COALESCE(l.listed_at, l.created_at),
-			a.full_name,
-			a.phone,
-			a.email,
-			b.name,
-			b.phone,
-			b.website
-		FROM listings l
-		LEFT JOIN listing_agents la ON la.listing_id = l.id
-		LEFT JOIN agents a ON a.id = la.agent_id
-		LEFT JOIN brokerages b ON b.id = a.brokerage_id
-		WHERE l.property_id = $1
-		ORDER BY l.created_at DESC
+		SELECT * FROM (
+			SELECT DISTINCT ON (l.id)
+				l.id::text,
+				l.property_id::text,
+				l.source,
+				COALESCE(l.external_id, '') as external_id,
+				COALESCE(l.url, '') as url,
+				l.type,
+				COALESCE(l.status, '') as status,
+				COALESCE(l.price, 0)::bigint as price,
+				COALESCE(l.beds, 0) as beds,
+				COALESCE(l.baths, 0) as baths,
+				COALESCE(l.sqft, 0) as sqft,
+				COALESCE(l.description, '') as description,
+				COALESCE(l.listed_at, l.created_at) as listed_at,
+				a.full_name,
+				a.phone,
+				a.email,
+				b.name as brokerage_name,
+				b.phone as brokerage_phone,
+				b.website
+			FROM listings l
+			LEFT JOIN listing_agents la ON la.listing_id = l.id
+			LEFT JOIN agents a ON a.id = la.agent_id
+			LEFT JOIN brokerages b ON b.id = a.brokerage_id
+			WHERE l.property_id = $1
+			ORDER BY l.id
+		) sub
+		ORDER BY listed_at DESC
 	`, propertyID)
 	if err != nil {
 		return nil, err

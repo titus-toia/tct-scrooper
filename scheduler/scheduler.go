@@ -71,6 +71,25 @@ func (s *Scheduler) Start(ctx context.Context) error {
 		s.cron.Start()
 	} else if s.cfg.Scheduler.Interval > 0 {
 		log.Printf("Starting scheduler with interval: %s", s.cfg.Scheduler.Interval)
+
+		// Check if we're overdue for a scrape
+		lastRun, err := s.orchestrator.GetLastRunTime(ctx)
+		if err != nil {
+			log.Printf("Warning: could not get last run time: %v", err)
+		}
+
+		timeSinceLastRun := time.Since(lastRun)
+		if !lastRun.IsZero() && timeSinceLastRun >= s.cfg.Scheduler.Interval {
+			log.Printf("Last scrape was %s ago (>= %s interval), triggering immediate run", timeSinceLastRun.Round(time.Minute), s.cfg.Scheduler.Interval)
+			go func() {
+				if err := s.orchestrator.RunAll(ctx); err != nil {
+					log.Printf("Immediate run error: %v", err)
+				}
+			}()
+		} else if !lastRun.IsZero() {
+			log.Printf("Last scrape was %s ago, next run in %s", timeSinceLastRun.Round(time.Minute), (s.cfg.Scheduler.Interval - timeSinceLastRun).Round(time.Minute))
+		}
+
 		s.ticker = time.NewTicker(s.cfg.Scheduler.Interval)
 		go func() {
 			for {

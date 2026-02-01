@@ -152,7 +152,7 @@ func main() {
 	}
 	mediaWorker := workers.NewMediaWorker(pgStore, mediaUploader, cfg.Proxy.URL)
 	mediaWorker.SetLogger(workerLog)
-	go mediaWorker.Run(ctx, 20, 2*time.Minute) // batch of 20 every 2 min
+	go mediaWorker.Run(ctx, 50, 1*time.Minute) // batch of 50 every 1 min
 	log.Println("Media worker started")
 
 	// Register workers with scheduler for manual triggering

@@ -641,6 +641,20 @@ func (s *PostgresStore) UpdateScrapeRun(ctx context.Context, run *models.DomainS
 	return err
 }
 
+func (s *PostgresStore) GetLastScrapeRunTime(ctx context.Context) (time.Time, error) {
+	var lastRun time.Time
+	err := s.pool.QueryRow(ctx, `
+		SELECT started_at FROM scrape_runs
+		WHERE status = 'completed'
+		ORDER BY started_at DESC
+		LIMIT 1
+	`).Scan(&lastRun)
+	if err != nil {
+		return time.Time{}, nil
+	}
+	return lastRun, nil
+}
+
 // =============================================================================
 // Scrape Logs
 // =============================================================================
