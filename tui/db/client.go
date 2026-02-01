@@ -298,7 +298,7 @@ func (c *Client) GetPendingEnrichmentCount() (int, error) {
 	var count int
 	err := c.pg.QueryRow(c.ctx, `
 		SELECT COUNT(*) FROM listings
-		WHERE status = 'active' AND features IS NULL AND enrichment_attempts < 3
+		WHERE status = 'active' AND enriched_at IS NULL AND enrichment_attempts < 3
 	`).Scan(&count)
 	return count, err
 }

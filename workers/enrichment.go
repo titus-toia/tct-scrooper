@@ -702,6 +702,7 @@ func (w *EnrichmentWorker) UpdateListing(ctx context.Context, listingID uuid.UUI
 			features = $2,
 			description = COALESCE(NULLIF($3, ''), description),
 			stories = COALESCE(NULLIF($4, 0), stories),
+			enriched_at = NOW(),
 			updated_at = NOW()
 		WHERE id = $1`
 
@@ -762,7 +763,7 @@ func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
 	query := `
 		SELECT id, url, enrichment_attempts
 		FROM listings
-		WHERE status = 'active' AND features IS NULL AND url IS NOT NULL AND enrichment_attempts < 3
+		WHERE status = 'active' AND enriched_at IS NULL AND url IS NOT NULL AND enrichment_attempts < 3
 		ORDER BY created_at
 		LIMIT $1`
 
@@ -810,7 +811,6 @@ func (w *EnrichmentWorker) processBatch(ctx context.Context, batchSize int) {
 
 			if l.Attempts+1 >= 3 {
 				log.Printf("Enrichment: max attempts reached for %s, giving up", l.ID)
-				w.store.Pool().Exec(ctx, `UPDATE listings SET features = '{}' WHERE id = $1`, l.ID)
 				w.logFunc(models.LogLevelWarn, "enrichment", fmt.Sprintf("Gave up after 3 attempts: %s", l.URL))
 			}
 			continue

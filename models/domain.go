@@ -66,6 +66,7 @@ type Listing struct {
 		ListedAt    time.Time       `json:"listed_at" db:"listed_at"`
 		DelistedAt  *time.Time      `json:"delisted_at" db:"delisted_at"`
 		EnrichmentAttempts int         `json:"enrichment_attempts" db:"enrichment_attempts"`
+		EnrichedAt  *time.Time      `json:"enriched_at" db:"enriched_at"`
 		CreatedAt   time.Time       `json:"created_at" db:"created_at"`
 		UpdatedAt   time.Time       `json:"updated_at" db:"updated_at"`
 	}
