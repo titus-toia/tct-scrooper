@@ -2,7 +2,7 @@
 set -e
 
 echo "Pulling latest on droplet and building..."
-ssh scrooper-droplet 'cd /srv/tct_scrooper && git pull && /usr/local/go/bin/go build -o tct_scrooper . && cd tui && /usr/local/go/bin/go build -o tui_bin .'
+ssh scrooper-droplet 'cd /srv/tct_scrooper && git pull && /usr/local/go/bin/go build -o tct_scrooper . && cd tui && /usr/local/go/bin/go build -o ../tui_bin .'
 
 echo "Restarting daemon..."
 ssh scrooper-droplet 'sudo systemctl restart tct_scrooper'
