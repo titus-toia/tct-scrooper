@@ -49,9 +49,10 @@ func (d Data) Refresh() tea.Cmd {
 	}
 }
 
-func (d Data) SetSize(w, h int) {
+func (d Data) SetSize(w, h int) Data {
 	d.width = w
 	d.height = h
+	return d
 }
 
 func (d Data) GetSelectedURL() string {
@@ -209,10 +210,6 @@ func (d Data) View() string {
 }
 
 func (d Data) renderPropertiesTable() string {
-	header := fmt.Sprintf("%-35s %-12s %10s %4s %4s %7s %-8s %5s",
-		"Address", "City", "Price", "Bed", "Bath", "SqFt", "Type", "List")
-	rows := styles.TableHeader.Render(header) + "\n"
-
 	visibleRows := d.getVisibleRows()
 
 	// Calculate scroll offset to keep selected row visible
@@ -226,28 +223,74 @@ func (d Data) renderPropertiesTable() string {
 		endRow = len(d.properties)
 	}
 
-	for i := scrollOffset; i < endRow; i++ {
-		p := d.properties[i]
-		price := "—"
-		if p.LatestPrice > 0 {
-			price = fmt.Sprintf("$%d", p.LatestPrice/1000) + "K"
+	// Dynamic column widths based on terminal width
+	var rows string
+	if d.width < 100 {
+		// Compact mode
+		addrW := d.width - 45
+		if addrW < 20 {
+			addrW = 20
 		}
+		header := fmt.Sprintf("%-*s %-10s %9s %3s %3s",
+			addrW, "Address", "City", "Price", "Bd", "Ba")
+		rows = styles.TableHeader.Render(header) + "\n"
 
-		row := fmt.Sprintf("%-35s %-12s %10s %4d %4d %7s %-8s %5d",
-			truncate(p.Address, 35),
-			truncate(p.City, 12),
-			price,
-			p.Beds,
-			p.Baths,
-			formatSqft(p.Sqft),
-			truncate(p.PropertyType, 8),
-			p.TimesListed,
-		)
+		for i := scrollOffset; i < endRow; i++ {
+			p := d.properties[i]
+			price := "—"
+			if p.LatestPrice > 0 {
+				price = fmt.Sprintf("$%dK", p.LatestPrice/1000)
+			}
 
-		if i == d.selectedRow {
-			rows += styles.TableSelected.Render(row) + "\n"
-		} else {
-			rows += row + "\n"
+			row := fmt.Sprintf("%-*s %-10s %9s %3d %3d",
+				addrW,
+				truncate(p.Address, addrW),
+				truncate(p.City, 10),
+				price,
+				p.Beds,
+				p.Baths,
+			)
+
+			if i == d.selectedRow {
+				rows += styles.TableSelected.Render(row) + "\n"
+			} else {
+				rows += row + "\n"
+			}
+		}
+	} else {
+		// Full mode
+		addrW := 35
+		if d.width > 140 {
+			addrW = 45
+		}
+		header := fmt.Sprintf("%-*s %-12s %10s %4s %4s %7s %-8s %5s",
+			addrW, "Address", "City", "Price", "Bed", "Bath", "SqFt", "Type", "List")
+		rows = styles.TableHeader.Render(header) + "\n"
+
+		for i := scrollOffset; i < endRow; i++ {
+			p := d.properties[i]
+			price := "—"
+			if p.LatestPrice > 0 {
+				price = fmt.Sprintf("$%d", p.LatestPrice/1000) + "K"
+			}
+
+			row := fmt.Sprintf("%-*s %-12s %10s %4d %4d %7s %-8s %5d",
+				addrW,
+				truncate(p.Address, addrW),
+				truncate(p.City, 12),
+				price,
+				p.Beds,
+				p.Baths,
+				formatSqft(p.Sqft),
+				truncate(p.PropertyType, 8),
+				p.TimesListed,
+			)
+
+			if i == d.selectedRow {
+				rows += styles.TableSelected.Render(row) + "\n"
+			} else {
+				rows += row + "\n"
+			}
 		}
 	}
 

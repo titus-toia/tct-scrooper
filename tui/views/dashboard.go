@@ -128,9 +128,22 @@ func readLastLines(path string, n int) ([]string, time.Time) {
 	return allLines[start:], modTime
 }
 
-func (d Dashboard) SetSize(w, h int) {
+func (d Dashboard) SetSize(w, h int) Dashboard {
 	d.width = w
 	d.height = h
+	// Fixed content takes roughly 30-35 lines:
+	// - stat cards (~4), site cards (~8), city cards (~6)
+	// - runs title + table (~10), spacing (~5)
+	// Give remainder to logs, with reasonable bounds
+	fixedContent := 35
+	d.logViewport = h - fixedContent
+	if d.logViewport < 5 {
+		d.logViewport = 5
+	}
+	if d.logViewport > 25 {
+		d.logViewport = 25
+	}
+	return d
 }
 
 func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -286,22 +299,35 @@ func (d Dashboard) styleLogLine(line string, maxWidth int) string {
 }
 
 func (d Dashboard) renderStatCards() string {
+	cardWidth := d.statCardWidth()
 	cards := []string{
-		d.renderStatCard("Properties", fmt.Sprintf("%d", d.propCount)),
-		d.renderStatCard("Listings", fmt.Sprintf("%d", d.listingCount)),
-		d.renderStatCard("Active", fmt.Sprintf("%d", d.activeCount)),
-		d.renderStatCard("Enrich Q", fmt.Sprintf("%d", d.enrichmentQueue)),
-		d.renderStatCard("Media Q", fmt.Sprintf("%d", d.mediaQueue)),
+		d.renderStatCard("Properties", fmt.Sprintf("%d", d.propCount), cardWidth),
+		d.renderStatCard("Listings", fmt.Sprintf("%d", d.listingCount), cardWidth),
+		d.renderStatCard("Active", fmt.Sprintf("%d", d.activeCount), cardWidth),
+		d.renderStatCard("Enrich Q", fmt.Sprintf("%d", d.enrichmentQueue), cardWidth),
+		d.renderStatCard("Media Q", fmt.Sprintf("%d", d.mediaQueue), cardWidth),
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, cards...)
 }
 
-func (d Dashboard) renderStatCard(label, value string) string {
+func (d Dashboard) statCardWidth() int {
+	cardCount := 5
+	width := (d.width - 4) / cardCount // 4 for margins
+	if width < 12 {
+		width = 12
+	}
+	if width > 20 {
+		width = 20
+	}
+	return width
+}
+
+func (d Dashboard) renderStatCard(label, value string, width int) string {
 	content := lipgloss.JoinVertical(lipgloss.Center,
 		styles.StatValue.Render(value),
 		styles.StatLabel.Render(label),
 	)
-	return styles.CardBorder.Width(16).Render(content)
+	return styles.CardBorder.Width(width).Render(content)
 }
 
 func (d Dashboard) renderSiteCards() string {
@@ -309,11 +335,34 @@ func (d Dashboard) renderSiteCards() string {
 		return styles.Muted.Render("No sites configured")
 	}
 
-	var cards []string
-	for _, s := range d.stats {
-		cards = append(cards, d.renderSiteCard(s))
+	cardWidth := d.siteCardWidth()
+	cardsPerRow := d.width / (cardWidth + 2)
+	if cardsPerRow < 1 {
+		cardsPerRow = 1
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, cards...)
+
+	var rows []string
+	var currentRow []string
+	for i, s := range d.stats {
+		currentRow = append(currentRow, d.renderSiteCard(s, cardWidth))
+		if (i+1)%cardsPerRow == 0 || i == len(d.stats)-1 {
+			rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, currentRow...))
+			currentRow = nil
+		}
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+func (d Dashboard) siteCardWidth() int {
+	// Aim for 3-4 cards per row
+	width := (d.width - 8) / 4
+	if width < 20 {
+		width = 20
+	}
+	if width > 30 {
+		width = 30
+	}
+	return width
 }
 
 func (d Dashboard) renderCityCards() string {
@@ -321,14 +370,37 @@ func (d Dashboard) renderCityCards() string {
 		return ""
 	}
 
-	var cards []string
-	for _, c := range d.cityStats {
-		cards = append(cards, d.renderCityCard(c))
+	cardWidth := d.cityCardWidth()
+	cardsPerRow := d.width / (cardWidth + 2)
+	if cardsPerRow < 1 {
+		cardsPerRow = 1
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Top, cards...)
+
+	var rows []string
+	var currentRow []string
+	for i, c := range d.cityStats {
+		currentRow = append(currentRow, d.renderCityCard(c, cardWidth))
+		if (i+1)%cardsPerRow == 0 || i == len(d.cityStats)-1 {
+			rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Top, currentRow...))
+			currentRow = nil
+		}
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
-func (d Dashboard) renderCityCard(c db.CityStats) string {
+func (d Dashboard) cityCardWidth() int {
+	// Aim for 4-6 cards per row
+	width := (d.width - 8) / 5
+	if width < 18 {
+		width = 18
+	}
+	if width > 26 {
+		width = 26
+	}
+	return width
+}
+
+func (d Dashboard) renderCityCard(c db.CityStats, width int) string {
 	avgPrice := ""
 	if c.AvgPrice > 0 {
 		avgPrice = fmt.Sprintf("$%dk", c.AvgPrice/1000)
@@ -342,10 +414,10 @@ func (d Dashboard) renderCityCard(c db.CityStats) string {
 		styles.StatLabel.Render(fmt.Sprintf("Active: %d", c.ActiveCount)),
 		styles.StatLabel.Render(fmt.Sprintf("Avg: %s", avgPrice)),
 	)
-	return styles.CityCardBorder.Width(20).Render(content)
+	return styles.CityCardBorder.Width(width).Render(content)
 }
 
-func (d Dashboard) renderSiteCard(s db.SiteStats) string {
+func (d Dashboard) renderSiteCard(s db.SiteStats, width int) string {
 	status := "○ never run"
 	statusStyle := styles.StatusPending
 	if s.LastRunStatus != nil {
@@ -375,7 +447,7 @@ func (d Dashboard) renderSiteCard(s db.SiteStats) string {
 		styles.StatLabel.Render(fmt.Sprintf("Listings: %d", s.TotalListings)),
 		styles.StatLabel.Render(fmt.Sprintf("Rate: %.0f%%", s.SuccessRate*100)),
 	)
-	return styles.SiteCardBorder.Width(24).Render(content)
+	return styles.SiteCardBorder.Width(width).Render(content)
 }
 
 func (d Dashboard) renderRunsTable() string {
@@ -383,11 +455,52 @@ func (d Dashboard) renderRunsTable() string {
 		return styles.Muted.Render("No runs yet")
 	}
 
+	// Determine how many runs to show based on available height
+	maxRuns := 5
+	if d.height > 40 {
+		maxRuns = 8
+	}
+	if d.height > 60 {
+		maxRuns = 10
+	}
+	if maxRuns > len(d.runs) {
+		maxRuns = len(d.runs)
+	}
+
+	// Compact format for narrow terminals
+	if d.width < 80 {
+		header := fmt.Sprintf("%-10s %-8s %-8s %5s %5s",
+			"Site", "Status", "Time", "New", "Err")
+		rows := styles.TableHeader.Render(header) + "\n"
+
+		for i := 0; i < maxRuns; i++ {
+			r := d.runs[i]
+			statusStyle := styles.StatusPending
+			switch r.Status {
+			case "completed":
+				statusStyle = styles.StatusSuccess
+			case "failed":
+				statusStyle = styles.StatusError
+			}
+
+			row := fmt.Sprintf("%-10s %s %-8s %5d %5d",
+				truncate(r.SiteID, 10),
+				statusStyle.Render(fmt.Sprintf("%-8s", truncate(r.Status, 8))),
+				r.StartedAt.Format("15:04"),
+				r.PropertiesNew,
+				r.ErrorsCount,
+			)
+			rows += row + "\n"
+		}
+		return rows
+	}
+
 	header := fmt.Sprintf("%-12s %-10s %-10s %6s %6s %6s %6s",
 		"Site", "Status", "Started", "Found", "New", "Relist", "Errors")
 	rows := styles.TableHeader.Render(header) + "\n"
 
-	for _, r := range d.runs {
+	for i := 0; i < maxRuns; i++ {
+		r := d.runs[i]
 		status := r.Status
 		statusStyle := styles.StatusPending
 		switch r.Status {

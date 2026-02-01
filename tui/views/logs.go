@@ -45,9 +45,10 @@ func (l Logs) Refresh() tea.Cmd {
 	}
 }
 
-func (l Logs) SetSize(w, h int) {
+func (l Logs) SetSize(w, h int) Logs {
 	l.width = w
 	l.height = h
+	return l
 }
 
 func (l Logs) Update(msg tea.Msg) (tea.Model, tea.Cmd) {

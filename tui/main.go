@@ -112,6 +112,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Propagate size to all views
+		m.dashboard = m.dashboard.SetSize(msg.Width, msg.Height-4)
+		m.data = m.data.SetSize(msg.Width, msg.Height-4)
+		m.logs = m.logs.SetSize(msg.Width, msg.Height-4)
 
 	case tickMsg:
 		cmds = append(cmds, m.refreshActive(), tickCmd())
