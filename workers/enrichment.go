@@ -711,18 +711,28 @@ func (w *EnrichmentWorker) UpdateListing(ctx context.Context, listingID uuid.UUI
 		return fmt.Errorf("update listing: %w", err)
 	}
 
-	// Queue photos
+	// Queue photos and link to listing
 	if w.mediaService != nil && len(data.Photos) > 0 {
 		province, city := w.getListingLocation(ctx, listingID)
-		for _, photoURL := range data.Photos {
-			if _, err := w.mediaService.Enqueue(ctx, services.EnqueueParams{
+		for i, photoURL := range data.Photos {
+			mediaID, err := w.mediaService.Enqueue(ctx, services.EnqueueParams{
 				OriginalURL: photoURL,
 				MediaType:   "image",
 				Category:    models.MediaCategoryListing,
 				Province:    province,
 				City:        city,
-			}); err != nil {
+			})
+			if err != nil {
 				log.Printf("Warning: failed to queue photo %s: %v", photoURL, err)
+				continue
+			}
+			// Link media to listing
+			if err := w.store.UpsertListingMedia(ctx, &models.ListingMedia{
+				ListingID: listingID,
+				MediaID:   mediaID,
+				Position:  i,
+			}); err != nil {
+				log.Printf("Warning: failed to link photo to listing: %v", err)
 			}
 		}
 	}
