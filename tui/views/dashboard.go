@@ -486,8 +486,8 @@ func (d Dashboard) renderRunsTable() string {
 
 	// Compact format for narrow terminals
 	if d.width < 80 {
-		header := fmt.Sprintf("%-10s %-8s %-8s %5s %5s",
-			"Site", "Status", "Time", "New", "Err")
+		header := fmt.Sprintf("%-10s %-8s %-12s %-6s %5s %5s",
+			"Site", "Status", "Started", "Done", "New", "Err")
 		rows := styles.TableHeader.Render(header) + "\n"
 
 		for i := 0; i < maxRuns; i++ {
@@ -500,10 +500,15 @@ func (d Dashboard) renderRunsTable() string {
 				statusStyle = styles.StatusError
 			}
 
-			row := fmt.Sprintf("%-10s %s %-8s %5d %5d",
+			completed := "—"
+			if r.FinishedAt != nil {
+				completed = r.FinishedAt.Format("15:04")
+			}
+			row := fmt.Sprintf("%-10s %s %-12s %-6s %5d %5d",
 				truncate(r.SiteID, 10),
 				statusStyle.Render(fmt.Sprintf("%-8s", truncate(r.Status, 8))),
-				r.StartedAt.Format("15:04"),
+				r.StartedAt.Format("Jan02 15:04"),
+				completed,
 				r.PropertiesNew,
 				r.ErrorsCount,
 			)
@@ -512,8 +517,8 @@ func (d Dashboard) renderRunsTable() string {
 		return rows
 	}
 
-	header := fmt.Sprintf("%-12s %-10s %-10s %6s %6s %6s %6s",
-		"Site", "Status", "Started", "Found", "New", "Relist", "Errors")
+	header := fmt.Sprintf("%-12s %-10s %-16s %-9s %6s %5s %6s %6s",
+		"Site", "Status", "Started", "Done", "Found", "New", "Relist", "Errors")
 	rows := styles.TableHeader.Render(header) + "\n"
 
 	for i := 0; i < maxRuns; i++ {
@@ -527,11 +532,16 @@ func (d Dashboard) renderRunsTable() string {
 			statusStyle = styles.StatusError
 		}
 
-		started := r.StartedAt.Format("15:04:05")
-		row := fmt.Sprintf("%-12s %s %-10s %6d %6d %6d %6d",
+		started := r.StartedAt.Format("Jan02 Mon 15:04")
+		completed := "—"
+		if r.FinishedAt != nil {
+			completed = r.FinishedAt.Format("15:04:05")
+		}
+		row := fmt.Sprintf("%-12s %s %-16s %-9s %6d %5d %6d %6d",
 			truncate(r.SiteID, 12),
 			statusStyle.Render(fmt.Sprintf("%-10s", status)),
 			started,
+			completed,
 			r.ListingsFound,
 			r.PropertiesNew,
 			r.PropertiesRelisted,
